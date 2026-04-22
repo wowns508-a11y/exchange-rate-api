@@ -22,6 +22,15 @@ def crawl_exchange_rates():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
+    # ✅ SSL 검증 비활성화 추가
+    import ssl
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    res = requests.get(url, headers=headers, timeout=10, verify=False)  # ✅ verify=False 추가
+    res.encoding = "utf-8"
+    soup = BeautifulSoup(res.text, "html.parser")
+    
     res = requests.get(url, headers=headers, timeout=10)
     res.encoding = "utf-8"
     soup = BeautifulSoup(res.text, "html.parser")
