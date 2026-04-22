@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import xml.etree.ElementTree as ET
+import re
 from datetime import datetime, timedelta
+import calendar
 import urllib3
 import os
 
@@ -40,12 +41,12 @@ CUR_NAMES = {
 # 한국수출입은행 API
 # =====================
 def fetch_exim_by_date(date_str):
-    params = {
-        "authkey": API_KEY,
-        "searchdate": date_str,
-        "data": "AP01"
-    }
     try:
+        params = {
+            "authkey": API_KEY,
+            "searchdate": date_str,
+            "data": "AP01"
+        }
         res = requests.get(EXIM_URL, params=params, timeout=10, verify=False)
         data = res.json()
         if not isinstance(data, list):
@@ -63,90 +64,94 @@ def get_workday(offset=0):
             count -= 1
     return date.strftime("%Y%m%d")
 
+def calc_change(today_val, yesterday_val, decimal=2):
+    try:
+        t = float(str(today_val).replace(",", ""))
+        y = float(str(yesterday_val).replace(",", ""))
+        diff = t - y
+        if diff > 0:
+            return "RISE", f"{diff:+.{decimal}f}"
+        elif diff < 0:
+            return "FALL", f"{diff:+.{decimal}f}"
+        else:
+            return "EVEN", "0.00"
+    except:
+        return "", ""
+
 # =====================
-# 서울외국환중개 XML API
+# 서울외국환중개 XML
 # =====================
-def fetch_smbs_xml(url, currency, start_year, start_month, end_year, end_month):
+def fetch_smbs_xml(endpoint, currency, start_year, start_month, end_year, end_month):
     arr_value = f"{currency}_{start_year}-{start_month:02d}_{end_year}-{end_month:02d}"
     try:
         res = requests.get(
-            f"http://www.smbs.biz/ExRate/{url}?arr_value={arr_value}",
+            f"http://www.smbs.biz/ExRate/{endpoint}?arr_value={arr_value}",
             headers=SMBS_HEADERS,
             timeout=10,
             verify=False
         )
         content = res.content.decode("euc-kr").strip()
-
-        # ✅ ET 대신 정규식으로 파싱
-        import re
-        data = {}
         pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
+        data = {}
         for match in pattern.finditer(content):
-            label = match.group(1).strip()   # "2026.03"
-            value = match.group(2).strip()   # "83.61"
-            key = label.replace(".", "")     # "202603"
+            label = match.group(1).strip()
+            value = match.group(2).strip()
+            key = label.replace(".", "")  # "2026.03" → "202603"
             data[key] = value
-
         return data
     except Exception as e:
-        print(f"SMBS XML 오류: {e}")
+        print(f"SMBS XML 오류 ({currency}): {e}")
         return {}
 
 def fetch_smbs_monthly_avg(currency, year, month):
-    """월평균 - 12개월치 요청"""
-    start_year = year - 1
-    start_month = month
     return fetch_smbs_xml(
         "MonAvgStdExRate_xml.jsp",
-        currency, start_year, start_month, year, month
+        currency,
+        year - 1, month,  # 12개월치
+        year, month
     )
 
 def fetch_smbs_month_end(currency, year, month):
-    """월말"""
-    start_year = year if month > 6 else year - 1
-    start_month = month - 6 if month > 6 else month + 6
     return fetch_smbs_xml(
         "MonLastStdExRate_xml.jsp",
-        currency, start_year, start_month, year, month
+        currency,
+        year - 1, month,
+        year, month
     )
 
 def fetch_smbs_today(currency, date_str):
-    """기간별 - 오늘 데이터"""
+    """기간별 - 특정일 환율"""
     year = int(date_str[:4])
     month = int(date_str[4:6])
     day = int(date_str[6:8])
-    date_key = f"{year}{month:02d}"
-    
-    # 당월 1일부터 오늘까지
     arr_value = f"{currency}_{year}-{month:02d}-{day:02d}_{year}-{month:02d}-{day:02d}"
     try:
         res = requests.get(
             f"http://www.smbs.biz/ExRate/StdExRate_xml.jsp?arr_value={arr_value}",
-            headers=SMBS_HEADERS,
+            headers={**SMBS_HEADERS, "Referer": "http://www.smbs.biz/ExRate/StdExRate.jsp"},
             timeout=10,
             verify=False
         )
-        root = ET.fromstring(res.content.decode("euc-kr"))
-        sets = root.findall("set")
-        if sets:
-            return sets[-1].get("value", "")
+        content = res.content.decode("euc-kr").strip()
+        pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
+        matches = pattern.findall(content)
+        if matches:
+            return matches[-1][1]
+        return ""
     except Exception as e:
-        print(f"SMBS Today 오류: {e}")
-    return ""
+        print(f"SMBS Today 오류 ({currency}): {e}")
+        return ""
 
 # =====================
 # exchangerates.org.uk
 # =====================
 def fetch_er_history(currency, year):
-    """연도별 환율 히스토리"""
     url = f"https://www.exchangerates.org.uk/{currency}-KRW-spot-exchange-rates-history-{year}.html"
     try:
+        from bs4 import BeautifulSoup
         res = requests.get(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         }, timeout=10, verify=False)
-        
-        from bs4 import BeautifulSoup
-        import re
         soup = BeautifulSoup(res.text, "html.parser")
         data = {}
         rows = soup.find_all("tr")
@@ -165,25 +170,8 @@ def fetch_er_history(currency, year):
                     continue
         return data
     except Exception as e:
-        print(f"ER 오류: {e}")
+        print(f"ER 오류 ({currency}): {e}")
         return {}
-
-# =====================
-# 전일대비 계산
-# =====================
-def calc_change(today_val, yesterday_val, decimal=2):
-    try:
-        t = float(str(today_val).replace(",", ""))
-        y = float(str(yesterday_val).replace(",", ""))
-        diff = t - y
-        if diff > 0:
-            return "RISE", f"{diff:+.{decimal}f}"
-        elif diff < 0:
-            return "FALL", f"{diff:+.{decimal}f}"
-        else:
-            return "EVEN", "0.00"
-    except:
-        return "", ""
 
 # =====================
 # API 엔드포인트
@@ -221,27 +209,25 @@ def get_rates():
                 "change_val": change_val,
             })
 
-        # KZT, MXN - 서울외국환중개
+        # KZT, MXN
         for cur in SMBS_TARGET:
             try:
-                data = fetch_smbs_monthly_avg(cur, year, month)
-                key = f"{year}{month:02d}"
-        
-        # ✅ 해당 월 없으면 가장 최근 데이터 사용
-            if key not in data and data:
-                key = sorted(data.keys())[-1]
-        
-            if key in data:
-                result.append({
-                    "currency": cur,
-                    "name": CUR_NAMES[cur],
-                    "base": data[key],
-                    "buy": "-", "sell": "-",
-            })
-        except Exception as e:
-            print(f"{cur} 월평균 오류: {e}")
+                today_val = fetch_smbs_today(cur, today_str)
+                yesterday_val = fetch_smbs_today(cur, yesterday_str)
+                if today_val:
+                    change, change_val = calc_change(today_val, yesterday_val, 4)
+                    rates.append({
+                        "currency": cur,
+                        "name": CUR_NAMES[cur],
+                        "base": today_val,
+                        "buy": "-", "sell": "-",
+                        "change": change,
+                        "change_val": change_val,
+                    })
+            except Exception as e:
+                print(f"{cur} 오류: {e}")
 
-        # IQD, LBP - exchangerates.org.uk
+        # IQD, LBP
         year = datetime.now().year
         for cur in ER_TARGET:
             try:
@@ -305,7 +291,6 @@ def get_rates_by_date(date: str):
                 "change_val": change_val,
             })
 
-        # KZT, MXN
         for cur in SMBS_TARGET:
             try:
                 today_val = fetch_smbs_today(cur, date)
@@ -323,7 +308,6 @@ def get_rates_by_date(date: str):
             except:
                 pass
 
-        # IQD, LBP
         year = int(date[:4])
         for cur in ER_TARGET:
             try:
@@ -355,14 +339,12 @@ def get_rates_by_date(date: str):
 @app.get("/rates/monthly-avg")
 def get_monthly_avg(year: int, month: int):
     try:
-        result = []
-
-        # USD, CNH, KWD, AED, SAR - 수출입은행 날짜별 평균
-        import calendar
         last_day = calendar.monthrange(year, month)[1]
         totals = {}
         counts = {}
+        result = []
 
+        # USD, CNH, KWD, AED, SAR
         for day in range(1, last_day + 1):
             date_obj = datetime(year, month, day)
             if date_obj.weekday() >= 5:
@@ -385,22 +367,27 @@ def get_monthly_avg(year: int, month: int):
                     "buy": "-", "sell": "-",
                 })
 
-        # KZT, MXN - 서울외국환중개 월평균 XML
+        # KZT, MXN
         for cur in SMBS_TARGET:
             try:
                 data = fetch_smbs_monthly_avg(cur, year, month)
-                key = f"{year}{month:02d}"
-                if key in data:
+                target_key = f"{year}{month:02d}"
+
+                # 해당 월 없으면 가장 최근 데이터 사용
+                if target_key not in data and data:
+                    target_key = sorted(data.keys())[-1]
+
+                if target_key in data:
                     result.append({
                         "currency": cur,
                         "name": CUR_NAMES[cur],
-                        "base": data[key],
+                        "base": data[target_key],
                         "buy": "-", "sell": "-",
                     })
             except Exception as e:
                 print(f"{cur} 월평균 오류: {e}")
 
-        # IQD, LBP - exchangerates.org.uk 평균 계산
+        # IQD, LBP
         for cur in ER_TARGET:
             try:
                 data = fetch_er_history(cur, year)
@@ -435,11 +422,10 @@ def get_monthly_avg(year: int, month: int):
 @app.get("/rates/month-end")
 def get_month_end(year: int, month: int):
     try:
-        result = []
-        import calendar
         last_day = calendar.monthrange(year, month)[1]
+        result = []
 
-        # USD, CNH, KWD, AED, SAR - 수출입은행 월말
+        # USD, CNH, KWD, AED, SAR
         for day in range(last_day, 0, -1):
             date_obj = datetime(year, month, day)
             if date_obj.weekday() >= 5:
@@ -458,22 +444,27 @@ def get_month_end(year: int, month: int):
                         })
                 break
 
-        # KZT, MXN - 서울외국환중개 월말 XML
+        # KZT, MXN
         for cur in SMBS_TARGET:
             try:
                 data = fetch_smbs_month_end(cur, year, month)
-                key = f"{year}{month:02d}"
-                if key in data:
+                target_key = f"{year}{month:02d}"
+
+                # 해당 월 없으면 가장 최근 데이터 사용
+                if target_key not in data and data:
+                    target_key = sorted(data.keys())[-1]
+
+                if target_key in data:
                     result.append({
                         "currency": cur,
                         "name": CUR_NAMES[cur],
-                        "base": data[key],
+                        "base": data[target_key],
                         "buy": "-", "sell": "-",
                     })
             except Exception as e:
                 print(f"{cur} 월말 오류: {e}")
 
-        # IQD, LBP - exchangerates.org.uk 월말
+        # IQD, LBP
         for cur in ER_TARGET:
             try:
                 data = fetch_er_history(cur, year)
@@ -513,11 +504,8 @@ def debug_smbs():
             verify=False
         )
         content = res.content.decode("euc-kr").strip()
-        
-        import re
         pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
         matches = pattern.findall(content)
-        
         return {
             "status_code": res.status_code,
             "content_preview": content[:500],
