@@ -38,10 +38,9 @@ def get_rates():
             rates.append({
                 "currency": item.get("cur_unit", ""),
                 "name": item.get("cur_nm", ""),
-                "buy": item.get("ttb", "-"),   # 전신환 매입
-                "sell": item.get("tts", "-"),  # 전신환 매도
                 "base": item.get("deal_bas_r", "-"),  # 매매기준율
                 "change": item.get("change", ""),
+                "change_val": item.get("change_rate", ""), # 전일대비 변동폭
             })
         return {
             "success": True,
