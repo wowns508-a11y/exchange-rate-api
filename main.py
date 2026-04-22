@@ -75,21 +75,18 @@ def fetch_smbs_xml(url, currency, start_year, start_month, end_year, end_month):
             timeout=10,
             verify=False
         )
-        # ✅ 앞뒤 공백 제거 후 파싱
         content = res.content.decode("euc-kr").strip()
-        
-        # ✅ XML 선언 앞 공백/개행 제거
-        if "<?xml" in content:
-            content = content[content.index("<?xml"):]
-        
-        root = ET.fromstring(content)
+
+        # ✅ ET 대신 정규식으로 파싱
+        import re
         data = {}
-        for item in root.findall("set"):
-            label = item.get("label", "").strip()
-            value = item.get("value", "").strip()
-            if label and value:
-                key = label.replace(".", "")
-                data[key] = value
+        pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
+        for match in pattern.finditer(content):
+            label = match.group(1).strip()   # "2026.03"
+            value = match.group(2).strip()   # "83.61"
+            key = label.replace(".", "")     # "202603"
+            data[key] = value
+
         return data
     except Exception as e:
         print(f"SMBS XML 오류: {e}")
