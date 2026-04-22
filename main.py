@@ -22,7 +22,7 @@ def fetch_rates():
         "searchdate": datetime.now().strftime("%Y%m%d"),
         "data": "AP01"
     }
-    res = requests.get(API_URL, params=params, timeout=10)
+    res = requests.get(API_URL, params=params, timeout=10, verify=False)  # ✅ verify=False 추가
     return res.json()
 
 @app.get("/")
