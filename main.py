@@ -499,3 +499,27 @@ def get_month_end(year: int, month: int):
         }
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
+
+@app.get("/debug/smbs")
+def debug_smbs():
+    try:
+        arr_value = "MXN_2025-10_2026-04"
+        res = requests.get(
+            f"http://www.smbs.biz/ExRate/MonAvgStdExRate_xml.jsp?arr_value={arr_value}",
+            headers=SMBS_HEADERS,
+            timeout=10,
+            verify=False
+        )
+        content = res.content.decode("euc-kr").strip()
+        
+        import re
+        pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
+        matches = pattern.findall(content)
+        
+        return {
+            "status_code": res.status_code,
+            "content_preview": content[:500],
+            "matches": matches
+        }
+    except Exception as e:
+        return {"error": str(e)}
