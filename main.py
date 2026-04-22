@@ -222,24 +222,24 @@ def get_rates():
             })
 
         # KZT, MXN - 서울외국환중개
-for cur in SMBS_TARGET:
-    try:
-        data = fetch_smbs_monthly_avg(cur, year, month)
-        key = f"{year}{month:02d}"
+        for cur in SMBS_TARGET:
+            try:
+                data = fetch_smbs_monthly_avg(cur, year, month)
+                key = f"{year}{month:02d}"
         
         # ✅ 해당 월 없으면 가장 최근 데이터 사용
-        if key not in data and data:
-            key = sorted(data.keys())[-1]
+            if key not in data and data:
+                key = sorted(data.keys())[-1]
         
-        if key in data:
-            result.append({
-                "currency": cur,
-                "name": CUR_NAMES[cur],
-                "base": data[key],
-                "buy": "-", "sell": "-",
+            if key in data:
+                result.append({
+                    "currency": cur,
+                    "name": CUR_NAMES[cur],
+                    "base": data[key],
+                    "buy": "-", "sell": "-",
             })
-    except Exception as e:
-        print(f"{cur} 월평균 오류: {e}")
+        except Exception as e:
+            print(f"{cur} 월평균 오류: {e}")
 
         # IQD, LBP - exchangerates.org.uk
         year = datetime.now().year
