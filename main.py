@@ -212,3 +212,61 @@ def get_month_end(year: int, month: int):
         return {"success": False, "error": "데이터 없음", "data": []}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
+        
+@app.get("/rates/by-date")
+def get_rates_by_date(date: str):
+    """특정 날짜 환율 조회 (YYYYMMDD)"""
+    try:
+        today_data = fetch_by_date(date)
+        
+        # 전일 계산
+        prev_date = datetime.strptime(date, "%Y%m%d") - timedelta(days=1)
+        # 주말이면 금요일로
+        while prev_date.weekday() >= 5:
+            prev_date -= timedelta(days=1)
+        yesterday_data = fetch_by_date(prev_date.strftime("%Y%m%d"))
+
+        if not today_data:
+            return {"success": False, "error": "데이터 없음", "data": []}
+
+        rates = []
+        for cur in TARGET:
+            today = today_data.get(cur)
+            yesterday = yesterday_data.get(cur)
+            if not today:
+                continue
+
+            base_today = float(today["deal_bas_r"].replace(",", ""))
+            change = ""
+            change_val = ""
+            if yesterday:
+                base_yesterday = float(yesterday["deal_bas_r"].replace(",", ""))
+                diff = base_today - base_yesterday
+                if diff > 0:
+                    change = "RISE"
+                    change_val = f"{diff:+.2f}"
+                elif diff < 0:
+                    change = "FALL"
+                    change_val = f"{diff:+.2f}"
+                else:
+                    change = "EVEN"
+                    change_val = "0.00"
+
+            rates.append({
+                "currency": cur,
+                "name": today["cur_nm"],
+                "base": today["deal_bas_r"],
+                "buy": today["ttb"],
+                "sell": today["tts"],
+                "change": change,
+                "change_val": change_val,
+            })
+
+        return {
+            "success": True,
+            "date": date,
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+            "data": rates
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
