@@ -93,9 +93,9 @@ def fetch_smbs_xml(url, currency, start_year, start_month, end_year, end_month):
         return {}
 
 def fetch_smbs_monthly_avg(currency, year, month):
-    """월평균"""
-    start_year = year if month > 6 else year - 1
-    start_month = month - 6 if month > 6 else month + 6
+    """월평균 - 12개월치 요청"""
+    start_year = year - 1
+    start_month = month
     return fetch_smbs_xml(
         "MonAvgStdExRate_xml.jsp",
         currency, start_year, start_month, year, month
@@ -222,22 +222,24 @@ def get_rates():
             })
 
         # KZT, MXN - 서울외국환중개
-        for cur in SMBS_TARGET:
-            try:
-                today_val = fetch_smbs_today(cur, today_str)
-                yesterday_val = fetch_smbs_today(cur, yesterday_str)
-                if today_val:
-                    change, change_val = calc_change(today_val, yesterday_val, 4)
-                    rates.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": today_val,
-                        "buy": "-", "sell": "-",
-                        "change": change,
-                        "change_val": change_val,
-                    })
-            except Exception as e:
-                print(f"{cur} 오류: {e}")
+for cur in SMBS_TARGET:
+    try:
+        data = fetch_smbs_monthly_avg(cur, year, month)
+        key = f"{year}{month:02d}"
+        
+        # ✅ 해당 월 없으면 가장 최근 데이터 사용
+        if key not in data and data:
+            key = sorted(data.keys())[-1]
+        
+        if key in data:
+            result.append({
+                "currency": cur,
+                "name": CUR_NAMES[cur],
+                "base": data[key],
+                "buy": "-", "sell": "-",
+            })
+    except Exception as e:
+        print(f"{cur} 월평균 오류: {e}")
 
         # IQD, LBP - exchangerates.org.uk
         year = datetime.now().year
