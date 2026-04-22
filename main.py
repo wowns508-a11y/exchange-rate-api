@@ -75,3 +75,16 @@ def get_main_rates():
         }
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
+        
+@app.get("/debug/raw")
+def debug_raw():
+    try:
+        params = {
+            "authkey": API_KEY,
+            "searchdate": datetime.now().strftime("%Y%m%d"),
+            "data": "AP01"
+        }
+        res = requests.get(API_URL, params=params, timeout=10, verify=False)
+        return res.json()  # 원본 데이터 그대로 반환
+    except Exception as e:
+        return {"error": str(e)}        
