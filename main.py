@@ -463,3 +463,218 @@ def reject_user(data: dict):
         return {"success": True, "message": f"{employee_id} 거절 완료"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+# =====================
+# Airtable 연동
+# =====================
+AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN")
+AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
+AIRTABLE_TABLE = os.environ.get("AIRTABLE_TABLE")
+AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE}"
+AIRTABLE_HEADERS = {
+    "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+    "Content-Type": "application/json"
+}
+
+def fetch_airtable_all():
+    """Airtable 전체 데이터 가져오기 (페이지네이션 처리)"""
+    all_records = []
+    offset = None
+
+    while True:
+        params = {"pageSize": 100}
+        if offset:
+            params["offset"] = offset
+
+        res = requests.get(AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=30)
+        data = res.json()
+
+        records = data.get("records", [])
+        for r in records:
+            fields = r.get("fields", {})
+            all_records.append({
+                "연도": fields.get("연", ""),
+                "월": fields.get("월", ""),
+                "연월": fields.get("연월", ""),
+                "지역": fields.get("지역", ""),
+                "영업점": fields.get("영업점", ""),
+                "매출": float(fields.get("매출", 0) or 0),
+                "재료비": float(fields.get("재료비", 0) or 0),
+                "재료비율": fields.get("재료비율", ""),
+                "인건비": float(fields.get("인건비", 0) or 0),
+                "인건비율": fields.get("인건비율", ""),
+                "경비": float(fields.get("경비", 0) or 0),
+                "경비율": fields.get("경비율", ""),
+                "매출총이익": float(fields.get("매출총이익", 0) or 0),
+                "매출총이익율": fields.get("매출총이익율", ""),
+                "법인비용": float(fields.get("법인비용", 0) or 0),
+                "영업이익": float(fields.get("영업이익", 0) or 0),
+                "영업이익율": fields.get("영업이익율", ""),
+            })
+
+        offset = data.get("offset")
+        if not offset:
+            break
+
+    return all_records
+
+@app.get("/pnl/raw")
+def get_raw_data(year: int = None, month: int = None, region: str = None, store: str = None):
+    """Raw Data 조회"""
+    try:
+        records = fetch_airtable_all()
+
+        # 필터링
+        if year:
+            records = [r for r in records if r["연도"] == year]
+        if month:
+            records = [r for r in records if r["월"] == month]
+        if region:
+            records = [r for r in records if r["지역"] == region]
+        if store:
+            records = [r for r in records if store in r["영업점"]]
+
+        return {
+            "success": True,
+            "count": len(records),
+            "data": records
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+@app.get("/pnl/monthly")
+def get_monthly(year: int, month: int):
+    """월별 손익 - 지역별 합산"""
+    try:
+        records = fetch_airtable_all()
+        records = [r for r in records if r["연도"] == year and r["월"] == month]
+
+        # 지역별 합산
+        region_summary = {}
+        for r in records:
+            region = r["지역"]
+            if region not in region_summary:
+                region_summary[region] = {
+                    "지역": region,
+                    "매출": 0, "재료비": 0, "인건비": 0,
+                    "경비": 0, "매출총이익": 0, "법인비용": 0,
+                    "영업이익": 0, "영업점_수": 0, "영업점목록": []
+                }
+            s = region_summary[region]
+            s["매출"] += r["매출"]
+            s["재료비"] += r["재료비"]
+            s["인건비"] += r["인건비"]
+            s["경비"] += r["경비"]
+            s["매출총이익"] += r["매출총이익"]
+            s["법인비용"] += r["법인비용"]
+            s["영업이익"] += r["영업이익"]
+            s["영업점_수"] += 1
+            s["영업점목록"].append(r)
+
+        # 비율 계산
+        for region, s in region_summary.items():
+            매출 = s["매출"]
+            if 매출 > 0:
+                s["재료비율"] = f"{s['재료비']/매출*100:.2f}%"
+                s["인건비율"] = f"{s['인건비']/매출*100:.2f}%"
+                s["경비율"] = f"{s['경비']/매출*100:.2f}%"
+                s["매출총이익율"] = f"{s['매출총이익']/매출*100:.2f}%"
+                s["영업이익율"] = f"{s['영업이익']/매출*100:.2f}%"
+            else:
+                s["재료비율"] = "0.00%"
+                s["인건비율"] = "0.00%"
+                s["경비율"] = "0.00%"
+                s["매출총이익율"] = "0.00%"
+                s["영업이익율"] = "0.00%"
+
+        return {
+            "success": True,
+            "year": year,
+            "month": month,
+            "data": list(region_summary.values())
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+@app.get("/pnl/cumulative")
+def get_cumulative(year: int, start_month: int = 1, end_month: int = 12):
+    """누계 손익"""
+    try:
+        records = fetch_airtable_all()
+        records = [
+            r for r in records
+            if r["연도"] == year
+            and start_month <= r["월"] <= end_month
+        ]
+
+        # 전체 합산
+        total = {
+            "매출": 0, "재료비": 0, "인건비": 0,
+            "경비": 0, "매출총이익": 0, "법인비용": 0, "영업이익": 0
+        }
+
+        # 지역별 합산
+        region_summary = {}
+        for r in records:
+            for key in total:
+                total[key] += r[key]
+
+            region = r["지역"]
+            if region not in region_summary:
+                region_summary[region] = {
+                    "지역": region,
+                    "매출": 0, "재료비": 0, "인건비": 0,
+                    "경비": 0, "매출총이익": 0, "법인비용": 0, "영업이익": 0
+                }
+            for key in ["매출", "재료비", "인건비", "경비", "매출총이익", "법인비용", "영업이익"]:
+                region_summary[region][key] += r[key]
+
+        # 비율 계산
+        def add_rates(s):
+            m = s["매출"]
+            if m > 0:
+                s["재료비율"] = f"{s['재료비']/m*100:.2f}%"
+                s["인건비율"] = f"{s['인건비']/m*100:.2f}%"
+                s["경비율"] = f"{s['경비']/m*100:.2f}%"
+                s["매출총이익율"] = f"{s['매출총이익']/m*100:.2f}%"
+                s["영업이익율"] = f"{s['영업이익']/m*100:.2f}%"
+            else:
+                s["재료비율"] = s["인건비율"] = s["경비율"] = s["매출총이익율"] = s["영업이익율"] = "0.00%"
+            return s
+
+        add_rates(total)
+        for region in region_summary:
+            add_rates(region_summary[region])
+
+        return {
+            "success": True,
+            "year": year,
+            "start_month": start_month,
+            "end_month": end_month,
+            "total": total,
+            "by_region": list(region_summary.values())
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+@app.get("/pnl/regions")
+def get_regions():
+    """지역 목록"""
+    try:
+        records = fetch_airtable_all()
+        regions = sorted(list(set(r["지역"] for r in records if r["지역"])))
+        return {"success": True, "data": regions}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/pnl/stores")
+def get_stores(region: str = None):
+    """영업점 목록"""
+    try:
+        records = fetch_airtable_all()
+        if region:
+            records = [r for r in records if r["지역"] == region]
+        stores = sorted(list(set(r["영업점"] for r in records if r["영업점"])))
+        return {"success": True, "data": stores}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
