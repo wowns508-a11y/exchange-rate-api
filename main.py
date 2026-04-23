@@ -358,17 +358,17 @@ def debug_today():
     except Exception as e:
         return {"error": str(e)}
         
-@app.get("/rates/weekly")
+
+app.get("/rates/weekly")
 def get_weekly(currency: str = "USD"):
-    """최근 7영업일 환율 데이터"""
+    """최근 15영업일 환율 데이터"""
     try:
         result = []
         date = datetime.now()
         count = 0
 
-        while count < 7:
+        while count < 15:  # ✅ 7 → 15
             date_str = date.strftime("%Y%m%d")
-            formatted = to_dash(date_str)
             val = fetch_smbs_today(currency, date_str)
             if val:
                 result.append({
@@ -379,7 +379,7 @@ def get_weekly(currency: str = "USD"):
                 count += 1
             date -= timedelta(days=1)
 
-        result.reverse()  # 날짜 오름차순
+        result.reverse()
         return {
             "success": True,
             "currency": currency,
