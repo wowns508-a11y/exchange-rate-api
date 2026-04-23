@@ -387,3 +387,116 @@ def get_weekly(currency: str = "USD"):
         }
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
+
+import bcrypt
+import os
+from supabase import create_client
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# =====================
+# 계정 생성
+# =====================
+@app.post("/auth/register")
+def register(data: dict):
+    try:
+        email = data.get("email", "").strip()
+        name = data.get("name", "").strip()
+        employee_id = data.get("employee_id", "").strip()
+        password = data.get("password", "").strip()
+
+        # 필수값 확인
+        if not all([email, name, employee_id, password]):
+            return {"success": False, "error": "모든 항목을 입력해주세요."}
+
+        # 사번 중복 확인
+        existing = supabase.table("users").select("id").eq("employee_id", employee_id).execute()
+        if existing.data:
+            return {"success": False, "error": "이미 등록된 사번입니다."}
+
+        # 이메일 중복 확인
+        existing_email = supabase.table("users").select("id").eq("email", email).execute()
+        if existing_email.data:
+            return {"success": False, "error": "이미 등록된 이메일입니다."}
+
+        # 비밀번호 암호화
+        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+        # DB 저장
+        supabase.table("users").insert({
+            "email": email,
+            "name": name,
+            "employee_id": employee_id,
+            "password": hashed,
+            "approved": False,
+        }).execute()
+
+        return {"success": True, "message": "계정 신청이 완료됐습니다. 관리자 승인 후 로그인 가능합니다."}
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# =====================
+# 로그인
+# =====================
+@app.post("/auth/login")
+def login(data: dict):
+    try:
+        employee_id = data.get("employee_id", "").strip()
+        password = data.get("password", "").strip()
+
+        if not employee_id or not password:
+            return {"success": False, "error": "사번과 비밀번호를 입력해주세요."}
+
+        # 사용자 조회
+        result = supabase.table("users").select("*").eq("employee_id", employee_id).execute()
+
+        if not result.data:
+            return {"success": False, "error": "존재하지 않는 사번입니다."}
+
+        user = result.data[0]
+
+        # 승인 확인
+        if not user.get("approved"):
+            return {"success": False, "error": "관리자 승인 대기 중입니다."}
+
+        # 비밀번호 확인
+        if not bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
+            return {"success": False, "error": "비밀번호가 올바르지 않습니다."}
+
+        return {
+            "success": True,
+            "user": {
+                "employee_id": user["employee_id"],
+                "name": user["name"],
+                "email": user["email"],
+            }
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# =====================
+# 관리자: 승인 대기 목록
+# =====================
+@app.get("/auth/pending")
+def get_pending():
+    try:
+        result = supabase.table("users").select("*").eq("approved", False).execute()
+        return {"success": True, "data": result.data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# =====================
+# 관리자: 계정 승인
+# =====================
+@app.post("/auth/approve")
+def approve_user(data: dict):
+    try:
+        employee_id = data.get("employee_id")
+        supabase.table("users").update({"approved": True}).eq("employee_id", employee_id).execute()
+        return {"success": True, "message": f"{employee_id} 승인 완료"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
