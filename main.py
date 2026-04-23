@@ -37,7 +37,6 @@ CUR_NAMES = {
 # 서울외국환중개 XML
 # =====================
 def fetch_smbs_xml(endpoint, currency, start, end, referer=None):
-    """start, end: YYYY-MM-DD 형식"""
     arr_value = f"{currency}_{start}_{end}"
     headers = {**SMBS_HEADERS}
     if referer:
@@ -50,12 +49,22 @@ def fetch_smbs_xml(endpoint, currency, start, end, referer=None):
             verify=False
         )
         content = res.content.decode("euc-kr").strip()
-        pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
+
+        # ✅ color 속성 있는 경우도 처리
+        pattern = re.compile(r"<set[^>]+label='([^']+)'[^>]+value='([^']+)'")
         data = {}
         for match in pattern.finditer(content):
-            label = match.group(1).strip()
+            label = match.group(1).strip()   # "26.04.23" 또는 "2026.03"
             value = match.group(2).strip()
-            key = label.replace(".", "").replace("-", "")
+
+            # ✅ YY.MM.DD → YYYYMMDD
+            if len(label.split(".")[0]) == 2:
+                parts = label.split(".")
+                key = f"20{parts[0]}{parts[1]}{parts[2]}"
+            # ✅ YYYY.MM → YYYYMM
+            else:
+                key = label.replace(".", "")
+
             data[key] = value
         return data
     except Exception as e:
