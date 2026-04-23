@@ -499,3 +499,14 @@ def approve_user(data: dict):
         return {"success": True, "message": f"{employee_id} 승인 완료"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+        return {
+            "success": True,
+            "user": {
+                "employee_id": user["employee_id"],
+                "name": user["name"],
+                "email": user["email"],
+                "role": user.get("role", "user"),  # ✅ role 추가
+            }
+        }
+
+
