@@ -359,7 +359,7 @@ def debug_today():
         return {"error": str(e)}
         
 
-app.get("/rates/weekly")
+@app.get("/rates/weekly")
 def get_weekly(currency: str = "USD"):
     """최근 15영업일 환율 데이터"""
     try:
