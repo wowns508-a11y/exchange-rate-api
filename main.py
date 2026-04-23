@@ -508,5 +508,12 @@ def approve_user(data: dict):
                 "role": user.get("role", "user"),  # ✅ role 추가
             }
         }
-
+@app.post("/auth/reject")
+def reject_user(data: dict):
+    try:
+        employee_id = data.get("employee_id")
+        supabase.table("users").delete().eq("employee_id", employee_id).execute()
+        return {"success": True, "message": f"{employee_id} 거절 완료"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
