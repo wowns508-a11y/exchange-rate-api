@@ -22,11 +22,10 @@ API_KEY = os.environ.get("KEY", "9U8uB1WTiCDYQx6g7UsRMi05Jhi8upFr")
 EXIM_URL = "https://www.koreaexim.go.kr/site/program/financial/exchangeJSON"
 EXIM_TARGET = ["USD", "CNH", "KWD", "AED", "SAR"]
 SMBS_TARGET = ["KZT", "MXN"]
-ER_TARGET = ["IQD", "LBP"]
 
 SMBS_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "http://www.smbs.biz/ExRate/MonAvgStdExRate.jsp"
+    "Referer": "http://www.smbs.biz/ExRate/StdExRate.jsp"
 }
 
 CUR_NAMES = {
@@ -96,39 +95,21 @@ def fetch_smbs_xml(endpoint, currency, start_year, start_month, end_year, end_mo
         for match in pattern.finditer(content):
             label = match.group(1).strip()
             value = match.group(2).strip()
-            key = label.replace(".", "")  # "2026.03" → "202603"
+            key = label.replace(".", "")
             data[key] = value
         return data
     except Exception as e:
         print(f"SMBS XML 오류 ({currency}): {e}")
         return {}
 
-def fetch_smbs_monthly_avg(currency, year, month):
-    return fetch_smbs_xml(
-        "MonAvgStdExRate_xml.jsp",
-        currency,
-        year - 1, month,  # 12개월치
-        year, month
-    )
-
-def fetch_smbs_month_end(currency, year, month):
-    return fetch_smbs_xml(
-        "MonLastStdExRate_xml.jsp",
-        currency,
-        year - 1, month,
-        year, month
-    )
-
 def fetch_smbs_today(currency, date_str):
     """기간별 - 특정일 환율"""
-    year = int(date_str[:4])
-    month = int(date_str[4:6])
-    day = int(date_str[6:8])
-    arr_value = f"{currency}_{year}-{month:02d}-{day:02d}_{year}-{month:02d}-{day:02d}"
     try:
+        formatted = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        arr_value = f"{currency}_{formatted}_{formatted}"
         res = requests.get(
             f"http://www.smbs.biz/ExRate/StdExRate_xml.jsp?arr_value={arr_value}",
-            headers={**SMBS_HEADERS, "Referer": "http://www.smbs.biz/ExRate/StdExRate.jsp"},
+            headers=SMBS_HEADERS,
             timeout=10,
             verify=False
         )
@@ -142,35 +123,41 @@ def fetch_smbs_today(currency, date_str):
         print(f"SMBS Today 오류 ({currency}): {e}")
         return ""
 
+def fetch_smbs_monthly_avg(currency, year, month):
+    return fetch_smbs_xml(
+        "MonAvgStdExRate_xml.jsp",
+        currency,
+        year - 1, month,
+        year, month
+    )
+
+def fetch_smbs_month_end(currency, year, month):
+    return fetch_smbs_xml(
+        "MonLastStdExRate_xml.jsp",
+        currency,
+        year - 1, month,
+        year, month
+    )
+
 # =====================
-# exchangerates.org.uk
+# open.er-api.com - IQD, LBP
 # =====================
-def fetch_er_history(currency, year):
-    url = f"https://www.exchangerates.org.uk/{currency}-KRW-spot-exchange-rates-history-{year}.html"
+def fetch_er_open():
     try:
-        from bs4 import BeautifulSoup
-        res = requests.get(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        }, timeout=10, verify=False)
-        soup = BeautifulSoup(res.text, "html.parser")
-        data = {}
-        rows = soup.find_all("tr")
-        for row in rows:
-            cols = row.find_all("td")
-            if len(cols) >= 2:
-                date_text = cols[0].get_text(strip=True)
-                rate_text = cols[1].get_text(strip=True)
-                try:
-                    date_obj = datetime.strptime(date_text, "%d %b %Y")
-                    date_key = date_obj.strftime("%Y%m%d")
-                    rate_val = re.search(r'[\d.]+', rate_text)
-                    if rate_val:
-                        data[date_key] = rate_val.group()
-                except:
-                    continue
-        return data
+        res = requests.get(
+            "https://open.er-api.com/v6/latest/KRW",
+            timeout=10,
+            verify=False
+        )
+        data = res.json().get("rates", {})
+        result = {}
+        for cur in ["IQD", "LBP"]:
+            if cur in data and data[cur] != 0:
+                rate = round(1 / data[cur], 4)
+                result[cur] = str(rate)
+        return result
     except Exception as e:
-        print(f"ER 오류 ({currency}): {e}")
+        print(f"ER Open 오류: {e}")
         return {}
 
 # =====================
@@ -209,7 +196,7 @@ def get_rates():
                 "change_val": change_val,
             })
 
-        # KZT, MXN
+        # KZT, MXN - 서울외국환중개
         for cur in SMBS_TARGET:
             try:
                 today_val = fetch_smbs_today(cur, today_str)
@@ -227,25 +214,21 @@ def get_rates():
             except Exception as e:
                 print(f"{cur} 오류: {e}")
 
-        # IQD, LBP
-        year = datetime.now().year
-        for cur in ER_TARGET:
-            try:
-                data = fetch_er_history(cur, year)
-                today_val = data.get(today_str)
-                yesterday_val = data.get(yesterday_str)
-                if today_val:
-                    change, change_val = calc_change(today_val, yesterday_val, 6)
+        # IQD, LBP - open.er-api.com
+        try:
+            er_data = fetch_er_open()
+            for cur in ["IQD", "LBP"]:
+                if cur in er_data:
                     rates.append({
                         "currency": cur,
                         "name": CUR_NAMES[cur],
-                        "base": today_val,
+                        "base": er_data[cur],
                         "buy": "-", "sell": "-",
-                        "change": change,
-                        "change_val": change_val,
+                        "change": "",
+                        "change_val": "",
                     })
-            except Exception as e:
-                print(f"{cur} 오류: {e}")
+        except Exception as e:
+            print(f"IQD/LBP 오류: {e}")
 
         return {
             "success": True,
@@ -308,24 +291,20 @@ def get_rates_by_date(date: str):
             except:
                 pass
 
-        year = int(date[:4])
-        for cur in ER_TARGET:
-            try:
-                data = fetch_er_history(cur, year)
-                today_val = data.get(date)
-                yesterday_val = data.get(prev_str)
-                if today_val:
-                    change, change_val = calc_change(today_val, yesterday_val, 6)
+        # IQD, LBP - open.er-api.com (날짜별 미지원, 현재 환율 사용)
+        try:
+            er_data = fetch_er_open()
+            for cur in ["IQD", "LBP"]:
+                if cur in er_data:
                     rates.append({
                         "currency": cur,
                         "name": CUR_NAMES[cur],
-                        "base": today_val,
+                        "base": er_data[cur],
                         "buy": "-", "sell": "-",
-                        "change": change,
-                        "change_val": change_val,
+                        "change": "", "change_val": "",
                     })
-            except:
-                pass
+        except:
+            pass
 
         return {
             "success": True,
@@ -372,11 +351,8 @@ def get_monthly_avg(year: int, month: int):
             try:
                 data = fetch_smbs_monthly_avg(cur, year, month)
                 target_key = f"{year}{month:02d}"
-
-                # 해당 월 없으면 가장 최근 데이터 사용
                 if target_key not in data and data:
                     target_key = sorted(data.keys())[-1]
-
                 if target_key in data:
                     result.append({
                         "currency": cur,
@@ -387,28 +363,8 @@ def get_monthly_avg(year: int, month: int):
             except Exception as e:
                 print(f"{cur} 월평균 오류: {e}")
 
-        # IQD, LBP
-        for cur in ER_TARGET:
-            try:
-                data = fetch_er_history(cur, year)
-                vals = []
-                for day in range(1, last_day + 1):
-                    date_obj = datetime(year, month, day)
-                    if date_obj.weekday() >= 5:
-                        continue
-                    date_key = date_obj.strftime("%Y%m%d")
-                    if date_key in data:
-                        vals.append(float(data[date_key]))
-                if vals:
-                    avg = sum(vals) / len(vals)
-                    result.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": f"{avg:.6f}",
-                        "buy": "-", "sell": "-",
-                    })
-            except Exception as e:
-                print(f"{cur} 월평균 오류: {e}")
+        # IQD, LBP - 월평균 미지원
+        # open.er-api는 과거 데이터 미제공으로 제외
 
         return {
             "success": True,
@@ -439,8 +395,7 @@ def get_month_end(year: int, month: int):
                             "currency": cur,
                             "name": data[cur]["cur_nm"],
                             "base": data[cur]["deal_bas_r"],
-                            "buy": data[cur]["ttb"],
-                            "sell": data[cur]["tts"],
+                            "buy": "-", "sell": "-",
                         })
                 break
 
@@ -449,11 +404,8 @@ def get_month_end(year: int, month: int):
             try:
                 data = fetch_smbs_month_end(cur, year, month)
                 target_key = f"{year}{month:02d}"
-
-                # 해당 월 없으면 가장 최근 데이터 사용
                 if target_key not in data and data:
                     target_key = sorted(data.keys())[-1]
-
                 if target_key in data:
                     result.append({
                         "currency": cur,
@@ -464,25 +416,8 @@ def get_month_end(year: int, month: int):
             except Exception as e:
                 print(f"{cur} 월말 오류: {e}")
 
-        # IQD, LBP
-        for cur in ER_TARGET:
-            try:
-                data = fetch_er_history(cur, year)
-                for day in range(last_day, 0, -1):
-                    date_obj = datetime(year, month, day)
-                    if date_obj.weekday() >= 5:
-                        continue
-                    date_key = date_obj.strftime("%Y%m%d")
-                    if date_key in data:
-                        result.append({
-                            "currency": cur,
-                            "name": CUR_NAMES[cur],
-                            "base": data[date_key],
-                            "buy": "-", "sell": "-",
-                        })
-                        break
-            except Exception as e:
-                print(f"{cur} 월말 오류: {e}")
+        # IQD, LBP - 월말 미지원
+        # open.er-api는 과거 데이터 미제공으로 제외
 
         return {
             "success": True,
@@ -493,23 +428,29 @@ def get_month_end(year: int, month: int):
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
-@app.get("/debug/smbs")
-def debug_smbs():
+@app.get("/debug/today")
+def debug_today():
     try:
-        arr_value = "MXN_2025-10_2026-04"
-        res = requests.get(
-            f"http://www.smbs.biz/ExRate/MonAvgStdExRate_xml.jsp?arr_value={arr_value}",
-            headers=SMBS_HEADERS,
-            timeout=10,
-            verify=False
-        )
-        content = res.content.decode("euc-kr").strip()
-        pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
-        matches = pattern.findall(content)
-        return {
-            "status_code": res.status_code,
-            "content_preview": content[:500],
-            "matches": matches
-        }
+        today_str = get_workday(0)
+        formatted = f"{today_str[:4]}-{today_str[4:6]}-{today_str[6:8]}"
+        result = {}
+        for cur in ["KZT", "MXN"]:
+            arr_value = f"{cur}_{formatted}_{formatted}"
+            res = requests.get(
+                f"http://www.smbs.biz/ExRate/StdExRate_xml.jsp?arr_value={arr_value}",
+                headers=SMBS_HEADERS,
+                timeout=10,
+                verify=False
+            )
+            content = res.content.decode("euc-kr").strip()
+            pattern = re.compile(r"<set\s+label='([^']+)'\s+value='([^']+)'")
+            matches = pattern.findall(content)
+            result[cur] = {
+                "arr_value": arr_value,
+                "status": res.status_code,
+                "matches": matches,
+                "preview": content[:300]
+            }
+        return {"today": today_str, "result": result}
     except Exception as e:
         return {"error": str(e)}
