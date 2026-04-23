@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import calendar
 import urllib3
 import os
+import bcrypt
+from supabase import create_client
 
 urllib3.disable_warnings()
 
@@ -33,6 +35,10 @@ CUR_NAMES = {
     "LBP": "레바논 파운드",
 }
 
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 # =====================
 # 서울외국환중개 XML
 # =====================
@@ -49,22 +55,16 @@ def fetch_smbs_xml(endpoint, currency, start, end, referer=None):
             verify=False
         )
         content = res.content.decode("euc-kr").strip()
-
-        # ✅ color 속성 있는 경우도 처리
         pattern = re.compile(r"<set[^>]+label='([^']+)'[^>]+value='([^']+)'")
         data = {}
         for match in pattern.finditer(content):
-            label = match.group(1).strip()   # "26.04.23" 또는 "2026.03"
+            label = match.group(1).strip()
             value = match.group(2).strip()
-
-            # ✅ YY.MM.DD → YYYYMMDD
             if len(label.split(".")[0]) == 2:
                 parts = label.split(".")
                 key = f"20{parts[0]}{parts[1]}{parts[2]}"
-            # ✅ YYYY.MM → YYYYMM
             else:
                 key = label.replace(".", "")
-
             data[key] = value
         return data
     except Exception as e:
@@ -72,11 +72,9 @@ def fetch_smbs_xml(endpoint, currency, start, end, referer=None):
         return {}
 
 def to_dash(date_str):
-    """20260423 → 2026-04-23"""
     return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
 def get_latest_date():
-    """오늘부터 최대 10일 전까지 데이터 있는 날짜 찾기"""
     date = datetime.now()
     for _ in range(10):
         date_str = date.strftime("%Y%m%d")
@@ -91,7 +89,6 @@ def get_latest_date():
     return datetime.now().strftime("%Y%m%d")
 
 def fetch_smbs_today(currency, date_str):
-    """특정일 환율"""
     formatted = to_dash(date_str)
     data = fetch_smbs_xml(
         "StdExRate_xml.jsp", currency, formatted, formatted,
@@ -105,7 +102,6 @@ def fetch_smbs_today(currency, date_str):
     return ""
 
 def fetch_smbs_monthly_avg(currency, year, month):
-    """월평균"""
     data = fetch_smbs_xml(
         "MonAvgStdExRate_xml.jsp", currency,
         f"{year-1}-{month:02d}", f"{year}-{month:02d}",
@@ -117,7 +113,6 @@ def fetch_smbs_monthly_avg(currency, year, month):
     return data.get(target_key, "")
 
 def fetch_smbs_month_end(currency, year, month):
-    """월말"""
     data = fetch_smbs_xml(
         "MonLastStdExRate_xml.jsp", currency,
         f"{year-1}-{month:02d}", f"{year}-{month:02d}",
@@ -174,8 +169,6 @@ def root():
 def get_rates():
     try:
         today_str = get_latest_date()
-        
-        # 전일 찾기
         prev_date = datetime.strptime(today_str, "%Y%m%d") - timedelta(days=1)
         yesterday_str = ""
         for _ in range(10):
@@ -188,7 +181,6 @@ def get_rates():
 
         rates = []
 
-        # USD, CNH, KWD, AED, SAR, KZT, MXN
         for cur in ALL_TARGET:
             try:
                 today_val = fetch_smbs_today(cur, today_str)
@@ -207,7 +199,6 @@ def get_rates():
             except Exception as e:
                 print(f"{cur} 오류: {e}")
 
-        # IQD, LBP - open.er-api.com
         try:
             er_data = fetch_er_open()
             for cur in ["IQD", "LBP"]:
@@ -264,7 +255,6 @@ def get_rates_by_date(date: str):
             except Exception as e:
                 print(f"{cur} 오류: {e}")
 
-        # IQD, LBP
         try:
             er_data = fetch_er_open()
             for cur in ["IQD", "LBP"]:
@@ -295,7 +285,6 @@ def get_rates_by_date(date: str):
 def get_monthly_avg(year: int, month: int):
     try:
         result = []
-
         for cur in ALL_TARGET:
             try:
                 val = fetch_smbs_monthly_avg(cur, year, month)
@@ -308,13 +297,7 @@ def get_monthly_avg(year: int, month: int):
                     })
             except Exception as e:
                 print(f"{cur} 월평균 오류: {e}")
-
-        return {
-            "success": True,
-            "year": year,
-            "month": month,
-            "data": result
-        }
+        return {"success": True, "year": year, "month": month, "data": result}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
@@ -322,7 +305,6 @@ def get_monthly_avg(year: int, month: int):
 def get_month_end(year: int, month: int):
     try:
         result = []
-
         for cur in ALL_TARGET:
             try:
                 val = fetch_smbs_month_end(cur, year, month)
@@ -335,13 +317,29 @@ def get_month_end(year: int, month: int):
                     })
             except Exception as e:
                 print(f"{cur} 월말 오류: {e}")
+        return {"success": True, "year": year, "month": month, "data": result}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
 
-        return {
-            "success": True,
-            "year": year,
-            "month": month,
-            "data": result
-        }
+@app.get("/rates/weekly")
+def get_weekly(currency: str = "USD"):
+    try:
+        result = []
+        date = datetime.now()
+        count = 0
+        while count < 15:
+            date_str = date.strftime("%Y%m%d")
+            val = fetch_smbs_today(currency, date_str)
+            if val:
+                result.append({
+                    "date": f"{date.month}/{date.day}",
+                    "value": float(val.replace(",", "")),
+                    "full_date": date_str,
+                })
+                count += 1
+            date -= timedelta(days=1)
+        result.reverse()
+        return {"success": True, "currency": currency, "data": result}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
@@ -357,43 +355,6 @@ def debug_today():
         return {"today": today_str, "formatted": formatted, "result": result}
     except Exception as e:
         return {"error": str(e)}
-        
-
-@app.get("/rates/weekly")
-def get_weekly(currency: str = "USD"):
-    """최근 15영업일 환율 데이터"""
-    try:
-        result = []
-        date = datetime.now()
-        count = 0
-
-        while count < 15:  # ✅ 7 → 15
-            date_str = date.strftime("%Y%m%d")
-            val = fetch_smbs_today(currency, date_str)
-            if val:
-                result.append({
-                    "date": f"{date.month}/{date.day}",
-                    "value": float(val.replace(",", "")),
-                    "full_date": date_str,
-                })
-                count += 1
-            date -= timedelta(days=1)
-
-        result.reverse()
-        return {
-            "success": True,
-            "currency": currency,
-            "data": result
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e), "data": []}
-
-import bcrypt
-from supabase import create_client
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =====================
 # 계정 생성
@@ -406,24 +367,19 @@ def register(data: dict):
         employee_id = data.get("employee_id", "").strip()
         password = data.get("password", "").strip()
 
-        # 필수값 확인
         if not all([email, name, employee_id, password]):
             return {"success": False, "error": "모든 항목을 입력해주세요."}
 
-        # 사번 중복 확인
         existing = supabase.table("users").select("id").eq("employee_id", employee_id).execute()
         if existing.data:
             return {"success": False, "error": "이미 등록된 사번입니다."}
 
-        # 이메일 중복 확인
         existing_email = supabase.table("users").select("id").eq("email", email).execute()
         if existing_email.data:
             return {"success": False, "error": "이미 등록된 이메일입니다."}
 
-        # 비밀번호 암호화
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-        # DB 저장
         supabase.table("users").insert({
             "email": email,
             "name": name,
@@ -433,7 +389,6 @@ def register(data: dict):
         }).execute()
 
         return {"success": True, "message": "계정 신청이 완료됐습니다. 관리자 승인 후 로그인 가능합니다."}
-
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -449,7 +404,6 @@ def login(data: dict):
         if not employee_id or not password:
             return {"success": False, "error": "사번과 비밀번호를 입력해주세요."}
 
-        # 사용자 조회
         result = supabase.table("users").select("*").eq("employee_id", employee_id).execute()
 
         if not result.data:
@@ -457,11 +411,9 @@ def login(data: dict):
 
         user = result.data[0]
 
-        # 승인 확인
         if not user.get("approved"):
             return {"success": False, "error": "관리자 승인 대기 중입니다."}
 
-        # 비밀번호 확인
         if not bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
             return {"success": False, "error": "비밀번호가 올바르지 않습니다."}
 
@@ -471,9 +423,9 @@ def login(data: dict):
                 "employee_id": user["employee_id"],
                 "name": user["name"],
                 "email": user["email"],
+                "role": user.get("role", "user"),  # ✅ role 포함
             }
         }
-
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -499,15 +451,10 @@ def approve_user(data: dict):
         return {"success": True, "message": f"{employee_id} 승인 완료"}
     except Exception as e:
         return {"success": False, "error": str(e)}
-        return {
-            "success": True,
-            "user": {
-                "employee_id": user["employee_id"],
-                "name": user["name"],
-                "email": user["email"],
-                "role": user.get("role", "user"),  # ✅ role 추가
-            }
-        }
+
+# =====================
+# 관리자: 계정 거절
+# =====================
 @app.post("/auth/reject")
 def reject_user(data: dict):
     try:
@@ -516,4 +463,3 @@ def reject_user(data: dict):
         return {"success": True, "message": f"{employee_id} 거절 완료"}
     except Exception as e:
         return {"success": False, "error": str(e)}
-
