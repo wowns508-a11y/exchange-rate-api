@@ -454,3 +454,16 @@ def debug_today():
         return {"today": today_str, "result": result}
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/debug/exim")
+def debug_exim():
+    try:
+        today_str = get_workday(0)
+        data = fetch_exim_by_date(today_str)
+        return {
+            "today": today_str,
+            "count": len(data),
+            "keys": list(data.keys()),
+        }
+    except Exception as e:
+        return {"error": str(e)}
