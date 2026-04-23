@@ -389,7 +389,6 @@ def get_weekly(currency: str = "USD"):
         return {"success": False, "error": str(e), "data": []}
 
 import bcrypt
-import os
 from supabase import create_client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
