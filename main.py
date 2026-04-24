@@ -7,6 +7,7 @@ import calendar
 import urllib3
 import os
 import bcrypt
+import time  # ✅ 추가
 from supabase import create_client
 
 urllib3.disable_warnings()
@@ -517,11 +518,45 @@ def fetch_airtable_all():
 
     return all_records
 
+# ===================== ✅ 캐시 추가 =====================
+_cache: dict = {}
+CACHE_TTL = 600  # 10분
+
+def get_cached_records() -> list:
+    now = time.time()
+    if "records" in _cache and now - _cache["timestamp"] < CACHE_TTL:
+        print(f"[CACHE HIT] {len(_cache['records'])}건 캐시 반환")
+        return _cache["records"]
+    print("[CACHE MISS] Airtable 재조회 시작")
+    records = fetch_airtable_all()
+    _cache["records"] = records
+    _cache["timestamp"] = now
+    print(f"[CACHE SET] {len(records)}건 캐시 저장")
+    return records
+
+@app.post("/pnl/cache/clear")
+def clear_cache():
+    _cache.clear()
+    return {"success": True, "message": "캐시 초기화 완료. 다음 요청 시 Airtable 재조회합니다."}
+
+@app.get("/pnl/cache/status")
+def cache_status():
+    if "timestamp" not in _cache:
+        return {"cached": False}
+    age = int(time.time() - _cache["timestamp"])
+    return {
+        "cached": True,
+        "records": len(_cache.get("records", [])),
+        "age_seconds": age,
+        "expires_in": max(0, CACHE_TTL - age)
+    }
+# ======================================================
+
 @app.get("/pnl/raw")
 def get_raw_data(year: int = None, month: int = None, region: str = None, store: str = None):
     """Raw Data 조회"""
     try:
-        records = fetch_airtable_all()
+        records = get_cached_records()  # ✅ 변경
 
         # 필터링
         if year:
@@ -545,7 +580,7 @@ def get_raw_data(year: int = None, month: int = None, region: str = None, store:
 def get_monthly(year: int, month: int):
     """월별 손익 - 지역별 합산"""
     try:
-        records = fetch_airtable_all()
+        records = get_cached_records()  # ✅ 변경
         records = [r for r in records if r["연도"] == year and r["월"] == month]
 
         # 지역별 합산
@@ -599,7 +634,7 @@ def get_monthly(year: int, month: int):
 def get_cumulative(year: int, start_month: int = 1, end_month: int = 12):
     """누계 손익"""
     try:
-        records = fetch_airtable_all()
+        records = get_cached_records()  # ✅ 변경
         records = [
             r for r in records
             if r["연도"] == year
@@ -660,7 +695,7 @@ def get_cumulative(year: int, start_month: int = 1, end_month: int = 12):
 def get_regions():
     """지역 목록"""
     try:
-        records = fetch_airtable_all()
+        records = get_cached_records()  # ✅ 변경
         regions = sorted(list(set(r["지역"] for r in records if r["지역"])))
         return {"success": True, "data": regions}
     except Exception as e:
@@ -670,7 +705,7 @@ def get_regions():
 def get_stores(region: str = None):
     """영업점 목록"""
     try:
-        records = fetch_airtable_all()
+        records = get_cached_records()  # ✅ 변경
         if region:
             records = [r for r in records if r["지역"] == region]
         stores = sorted(list(set(r["영업점"] for r in records if r["영업점"])))
