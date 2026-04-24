@@ -678,3 +678,17 @@ def get_stores(region: str = None):
         return {"success": True, "data": stores}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@app.get("/pnl/debug")
+def debug_airtable():
+    """Airtable 원본 데이터 확인"""
+    try:
+        res = requests.get(
+            AIRTABLE_URL,
+            headers=AIRTABLE_HEADERS,
+            params={"pageSize": 3},
+            timeout=30
+        )
+        return res.json()
+    except Exception as e:
+        return {"error": str(e)}
