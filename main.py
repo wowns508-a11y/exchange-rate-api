@@ -477,7 +477,6 @@ AIRTABLE_HEADERS = {
 }
 
 def fetch_airtable_all():
-    """Airtable 전체 데이터 가져오기 (페이지네이션 처리)"""
     all_records = []
     offset = None
 
@@ -493,23 +492,23 @@ def fetch_airtable_all():
         for r in records:
             fields = r.get("fields", {})
             all_records.append({
-                "연도": fields.get("연", ""),
-                "월": fields.get("월", ""),
+                "연도": int(fields.get("연", 0) or 0),          # ✅ "연" 필드 사용
+                "월": int(fields.get("월", 0) or 0),            # ✅ int로 변환
                 "연월": fields.get("연월", ""),
                 "지역": fields.get("지역", ""),
                 "영업점": fields.get("영업점", ""),
                 "매출": float(fields.get("매출", 0) or 0),
                 "재료비": float(fields.get("재료비", 0) or 0),
-                "재료비율": fields.get("재료비율", ""),
+                "재료비율": fields.get("재료비율", 0) or 0,     # ✅ 소수점
                 "인건비": float(fields.get("인건비", 0) or 0),
-                "인건비율": fields.get("인건비율", ""),
+                "인건비율": fields.get("인건비율", 0) or 0,
                 "경비": float(fields.get("경비", 0) or 0),
-                "경비율": fields.get("경비율", ""),
+                "경비율": fields.get("경비율", 0) or 0,
                 "매출총이익": float(fields.get("매출총이익", 0) or 0),
-                "매출총이익율": fields.get("매출총이익율", ""),
+                "매출총이익율": fields.get("매출총이익율", 0) or 0,
                 "법인비용": float(fields.get("법인비용", 0) or 0),
                 "영업이익": float(fields.get("영업이익", 0) or 0),
-                "영업이익율": fields.get("영업이익율", ""),
+                "영업이익율": fields.get("영업이익율", 0) or 0,
             })
 
         offset = data.get("offset")
