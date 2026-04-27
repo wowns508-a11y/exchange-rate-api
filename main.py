@@ -3,11 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import re
 from datetime import datetime, timedelta
-import calendar
 import urllib3
 import os
 import bcrypt
-import time  # ✅ 추가
+import time
 from supabase import create_client
 
 urllib3.disable_warnings()
@@ -40,6 +39,47 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+AIRTABLE_TOKEN   = os.environ.get("AIRTABLE_TOKEN")
+AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
+AIRTABLE_TABLE   = os.environ.get("AIRTABLE_TABLE")
+AIRTABLE_URL     = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE}"
+AIRTABLE_HEADERS = {
+    "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+    "Content-Type": "application/json"
+}
+
+# =====================
+# 캐시
+# =====================
+_pnl_cache:   dict = {}
+_rates_cache: dict = {}
+PNL_CACHE_TTL   = 1800  # 30분
+RATES_CACHE_TTL = 1800  # 30분
+
+def get_cached_records() -> list:
+    now = time.time()
+    if "records" in _pnl_cache and now - _pnl_cache["timestamp"] < PNL_CACHE_TTL:
+        print(f"[PNL CACHE HIT] {len(_pnl_cache['records'])}건")
+        return _pnl_cache["records"]
+    print("[PNL CACHE MISS] Airtable 재조회")
+    records = fetch_airtable_all()
+    _pnl_cache["records"]   = records
+    _pnl_cache["timestamp"] = now
+    print(f"[PNL CACHE SET] {len(records)}건")
+    return records
+
+def get_cached_rates() -> dict | None:
+    now = time.time()
+    if "data" in _rates_cache and now - _rates_cache["timestamp"] < RATES_CACHE_TTL:
+        print("[RATES CACHE HIT]")
+        return _rates_cache["data"]
+    return None
+
+def set_rates_cache(data: dict):
+    _rates_cache["data"]      = data
+    _rates_cache["timestamp"] = time.time()
+    print("[RATES CACHE SET]")
+
 # =====================
 # 서울외국환중개 XML
 # =====================
@@ -51,9 +91,7 @@ def fetch_smbs_xml(endpoint, currency, start, end, referer=None):
     try:
         res = requests.get(
             f"http://www.smbs.biz/ExRate/{endpoint}?arr_value={arr_value}",
-            headers=headers,
-            timeout=10,
-            verify=False
+            headers=headers, timeout=10, verify=False
         )
         content = res.content.decode("euc-kr").strip()
         pattern = re.compile(r"<set[^>]+label='([^']+)'[^>]+value='([^']+)'")
@@ -78,7 +116,7 @@ def to_dash(date_str):
 def get_latest_date():
     date = datetime.now()
     for _ in range(10):
-        date_str = date.strftime("%Y%m%d")
+        date_str  = date.strftime("%Y%m%d")
         formatted = to_dash(date_str)
         data = fetch_smbs_xml(
             "StdExRate_xml.jsp", "USD", formatted, formatted,
@@ -95,9 +133,8 @@ def fetch_smbs_today(currency, date_str):
         "StdExRate_xml.jsp", currency, formatted, formatted,
         "http://www.smbs.biz/ExRate/StdExRate.jsp"
     )
-    key = date_str
-    if key in data:
-        return data[key]
+    if date_str in data:
+        return data[date_str]
     if data:
         return list(data.values())[-1]
     return ""
@@ -138,64 +175,96 @@ def calc_change(today_val, yesterday_val, decimal=2):
     except:
         return "", ""
 
-# =====================
-# open.er-api.com - IQD, LBP
-# =====================
 def fetch_er_open():
     try:
-        res = requests.get(
-            "https://open.er-api.com/v6/latest/KRW",
-            timeout=10,
-            verify=False
-        )
+        res  = requests.get("https://open.er-api.com/v6/latest/KRW", timeout=10, verify=False)
         data = res.json().get("rates", {})
         result = {}
         for cur in ["IQD", "LBP"]:
             if cur in data and data[cur] != 0:
-                rate = round(1 / data[cur], 4)
-                result[cur] = str(rate)
+                result[cur] = str(round(1 / data[cur], 4))
         return result
     except Exception as e:
         print(f"ER Open 오류: {e}")
         return {}
 
 # =====================
-# API 엔드포인트
+# Airtable
+# =====================
+def fetch_airtable_all():
+    all_records = []
+    offset = None
+    while True:
+        params = {"pageSize": 100}
+        if offset:
+            params["offset"] = offset
+        res  = requests.get(AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=30)
+        data = res.json()
+        for r in data.get("records", []):
+            f = r.get("fields", {})
+            all_records.append({
+                "연도": int(f.get("연", 0) or 0),
+                "월":   int(f.get("월", 0) or 0),
+                "연월": f.get("연월", ""),
+                "지역": f.get("지역", ""),
+                "영업점": f.get("영업점", ""),
+                "매출":     float(f.get("매출", 0) or 0),
+                "재료비":   float(f.get("재료비", 0) or 0),
+                "재료비율": f.get("재료비율", 0) or 0,
+                "인건비":   float(f.get("인건비", 0) or 0),
+                "인건비율": f.get("인건비율", 0) or 0,
+                "경비":     float(f.get("경비", 0) or 0),
+                "경비율":   f.get("경비율", 0) or 0,
+                "매출총이익":  float(f.get("매출총이익", 0) or 0),
+                "매출총이익율": f.get("매출총이익율", 0) or 0,
+                "법인비용":  float(f.get("법인비용", 0) or 0),
+                "영업이익":  float(f.get("영업이익", 0) or 0),
+                "영업이익율": f.get("영업이익율", 0) or 0,
+            })
+        offset = data.get("offset")
+        if not offset:
+            break
+    return all_records
+
+# =====================
+# 기본
 # =====================
 @app.get("/")
 def root():
     return {"status": "ok", "message": "환율 API 서버 작동중"}
 
+# =====================
+# 환율
+# =====================
 @app.get("/rates")
 def get_rates():
     try:
+        cached = get_cached_rates()
+        if cached:
+            return cached
+
         today_str = get_latest_date()
         prev_date = datetime.strptime(today_str, "%Y%m%d") - timedelta(days=1)
         yesterday_str = ""
         for _ in range(10):
             ps = prev_date.strftime("%Y%m%d")
-            test = fetch_smbs_today("USD", ps)
-            if test:
+            if fetch_smbs_today("USD", ps):
                 yesterday_str = ps
                 break
             prev_date -= timedelta(days=1)
 
         rates = []
-
         for cur in ALL_TARGET:
             try:
-                today_val = fetch_smbs_today(cur, today_str)
+                today_val     = fetch_smbs_today(cur, today_str)
                 yesterday_val = fetch_smbs_today(cur, yesterday_str) if yesterday_str else ""
                 if today_val:
-                    decimal = 4 if cur in ["KZT"] else 2
+                    decimal = 4 if cur == "KZT" else 2
                     change, change_val = calc_change(today_val, yesterday_val, decimal)
                     rates.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": today_val,
-                        "buy": "-", "sell": "-",
-                        "change": change,
-                        "change_val": change_val,
+                        "currency": cur, "name": CUR_NAMES[cur],
+                        "base": today_val, "buy": "-", "sell": "-",
+                        "change": change, "change_val": change_val,
                     })
             except Exception as e:
                 print(f"{cur} 오류: {e}")
@@ -205,21 +274,22 @@ def get_rates():
             for cur in ["IQD", "LBP"]:
                 if cur in er_data:
                     rates.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": er_data[cur],
-                        "buy": "-", "sell": "-",
+                        "currency": cur, "name": CUR_NAMES[cur],
+                        "base": er_data[cur], "buy": "-", "sell": "-",
                         "change": "", "change_val": "",
                     })
         except Exception as e:
             print(f"IQD/LBP 오류: {e}")
 
-        return {
+        result = {
             "success": True,
             "date": today_str,
             "updated_at": datetime.now().strftime("%H:%M:%S"),
             "data": rates
         }
+        set_rates_cache(result)
+        return result
+
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
@@ -227,31 +297,26 @@ def get_rates():
 def get_rates_by_date(date: str):
     try:
         prev_date = datetime.strptime(date, "%Y%m%d") - timedelta(days=1)
-        prev_str = ""
+        prev_str  = ""
         for _ in range(10):
             ps = prev_date.strftime("%Y%m%d")
-            test = fetch_smbs_today("USD", ps)
-            if test:
+            if fetch_smbs_today("USD", ps):
                 prev_str = ps
                 break
             prev_date -= timedelta(days=1)
 
         rates = []
-
         for cur in ALL_TARGET:
             try:
-                today_val = fetch_smbs_today(cur, date)
+                today_val     = fetch_smbs_today(cur, date)
                 yesterday_val = fetch_smbs_today(cur, prev_str) if prev_str else ""
                 if today_val:
-                    decimal = 4 if cur in ["KZT"] else 2
+                    decimal = 4 if cur == "KZT" else 2
                     change, change_val = calc_change(today_val, yesterday_val, decimal)
                     rates.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": today_val,
-                        "buy": "-", "sell": "-",
-                        "change": change,
-                        "change_val": change_val,
+                        "currency": cur, "name": CUR_NAMES[cur],
+                        "base": today_val, "buy": "-", "sell": "-",
+                        "change": change, "change_val": change_val,
                     })
             except Exception as e:
                 print(f"{cur} 오류: {e}")
@@ -261,10 +326,8 @@ def get_rates_by_date(date: str):
             for cur in ["IQD", "LBP"]:
                 if cur in er_data:
                     rates.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": er_data[cur],
-                        "buy": "-", "sell": "-",
+                        "currency": cur, "name": CUR_NAMES[cur],
+                        "base": er_data[cur], "buy": "-", "sell": "-",
                         "change": "", "change_val": "",
                     })
         except:
@@ -274,8 +337,7 @@ def get_rates_by_date(date: str):
             return {"success": False, "error": "데이터 없음 (주말/공휴일)", "data": []}
 
         return {
-            "success": True,
-            "date": date,
+            "success": True, "date": date,
             "updated_at": datetime.now().strftime("%H:%M:%S"),
             "data": rates
         }
@@ -290,12 +352,8 @@ def get_monthly_avg(year: int, month: int):
             try:
                 val = fetch_smbs_monthly_avg(cur, year, month)
                 if val:
-                    result.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": val,
-                        "buy": "-", "sell": "-",
-                    })
+                    result.append({"currency": cur, "name": CUR_NAMES[cur],
+                                   "base": val, "buy": "-", "sell": "-"})
             except Exception as e:
                 print(f"{cur} 월평균 오류: {e}")
         return {"success": True, "year": year, "month": month, "data": result}
@@ -310,12 +368,8 @@ def get_month_end(year: int, month: int):
             try:
                 val = fetch_smbs_month_end(cur, year, month)
                 if val:
-                    result.append({
-                        "currency": cur,
-                        "name": CUR_NAMES[cur],
-                        "base": val,
-                        "buy": "-", "sell": "-",
-                    })
+                    result.append({"currency": cur, "name": CUR_NAMES[cur],
+                                   "base": val, "buy": "-", "sell": "-"})
             except Exception as e:
                 print(f"{cur} 월말 오류: {e}")
         return {"success": True, "year": year, "month": month, "data": result}
@@ -326,8 +380,8 @@ def get_month_end(year: int, month: int):
 def get_weekly(currency: str = "USD"):
     try:
         result = []
-        date = datetime.now()
-        count = 0
+        date   = datetime.now()
+        count  = 0
         while count < 15:
             date_str = date.strftime("%Y%m%d")
             val = fetch_smbs_today(currency, date_str)
@@ -344,77 +398,70 @@ def get_weekly(currency: str = "USD"):
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
+@app.get("/rates/cache/status")
+def rates_cache_status():
+    if "timestamp" not in _rates_cache:
+        return {"cached": False}
+    age = int(time.time() - _rates_cache["timestamp"])
+    return {"cached": True, "age_seconds": age, "expires_in": max(0, RATES_CACHE_TTL - age)}
+
+@app.post("/rates/cache/clear")
+def clear_rates_cache():
+    _rates_cache.clear()
+    return {"success": True, "message": "환율 캐시 초기화 완료"}
+
 @app.get("/debug/today")
 def debug_today():
     try:
         today_str = get_latest_date()
-        formatted = to_dash(today_str)
-        result = {}
-        for cur in ALL_TARGET:
-            val = fetch_smbs_today(cur, today_str)
-            result[cur] = val
-        return {"today": today_str, "formatted": formatted, "result": result}
+        result    = {cur: fetch_smbs_today(cur, today_str) for cur in ALL_TARGET}
+        return {"today": today_str, "formatted": to_dash(today_str), "result": result}
     except Exception as e:
         return {"error": str(e)}
 
 # =====================
-# 계정 생성
+# 인증
 # =====================
 @app.post("/auth/register")
 def register(data: dict):
     try:
-        email = data.get("email", "").strip()
-        name = data.get("name", "").strip()
+        email       = data.get("email", "").strip()
+        name        = data.get("name", "").strip()
         employee_id = data.get("employee_id", "").strip()
-        password = data.get("password", "").strip()
+        password    = data.get("password", "").strip()
 
         if not all([email, name, employee_id, password]):
             return {"success": False, "error": "모든 항목을 입력해주세요."}
-
-        existing = supabase.table("users").select("id").eq("employee_id", employee_id).execute()
-        if existing.data:
+        if supabase.table("users").select("id").eq("employee_id", employee_id).execute().data:
             return {"success": False, "error": "이미 등록된 사번입니다."}
-
-        existing_email = supabase.table("users").select("id").eq("email", email).execute()
-        if existing_email.data:
+        if supabase.table("users").select("id").eq("email", email).execute().data:
             return {"success": False, "error": "이미 등록된 이메일입니다."}
 
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
         supabase.table("users").insert({
-            "email": email,
-            "name": name,
-            "employee_id": employee_id,
-            "password": hashed,
-            "approved": False,
+            "email": email, "name": name,
+            "employee_id": employee_id, "password": hashed, "approved": False,
         }).execute()
-
         return {"success": True, "message": "계정 신청이 완료됐습니다. 관리자 승인 후 로그인 가능합니다."}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# =====================
-# 로그인
-# =====================
 @app.post("/auth/login")
 def login(data: dict):
     try:
         employee_id = data.get("employee_id", "").strip()
-        password = data.get("password", "").strip()
+        password    = data.get("password", "").strip()
 
         if not employee_id or not password:
             return {"success": False, "error": "사번과 비밀번호를 입력해주세요."}
 
         result = supabase.table("users").select("*").eq("employee_id", employee_id).execute()
-
         if not result.data:
             return {"success": False, "error": "존재하지 않는 사번입니다."}
 
         user = result.data[0]
-
         if not user.get("approved"):
             return {"success": False, "error": "관리자 승인 대기 중입니다."}
-
         if not bcrypt.checkpw(password.encode("utf-8"), user["password"].encode("utf-8")):
             return {"success": False, "error": "비밀번호가 올바르지 않습니다."}
 
@@ -424,15 +471,12 @@ def login(data: dict):
                 "employee_id": user["employee_id"],
                 "name": user["name"],
                 "email": user["email"],
-                "role": user.get("role", "user"),  # ✅ role 포함
+                "role": user.get("role", "user"),
             }
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# =====================
-# 관리자: 승인 대기 목록
-# =====================
 @app.get("/auth/pending")
 def get_pending():
     try:
@@ -441,9 +485,6 @@ def get_pending():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# =====================
-# 관리자: 계정 승인
-# =====================
 @app.post("/auth/approve")
 def approve_user(data: dict):
     try:
@@ -453,9 +494,6 @@ def approve_user(data: dict):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# =====================
-# 관리자: 계정 거절
-# =====================
 @app.post("/auth/reject")
 def reject_user(data: dict):
     try:
@@ -466,292 +504,123 @@ def reject_user(data: dict):
         return {"success": False, "error": str(e)}
 
 # =====================
-# Airtable 연동
+# PnL 캐시 관리
 # =====================
-AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN")
-AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE = os.environ.get("AIRTABLE_TABLE")
-AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE}"
-AIRTABLE_HEADERS = {
-    "Authorization": f"Bearer {AIRTABLE_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-def fetch_airtable_all():
-    all_records = []
-    offset = None
-
-    while True:
-        params = {"pageSize": 100}
-        if offset:
-            params["offset"] = offset
-
-        res = requests.get(AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=30)
-        data = res.json()
-
-        records = data.get("records", [])
-        for r in records:
-            fields = r.get("fields", {})
-            all_records.append({
-                "연도": int(fields.get("연", 0) or 0),          # ✅ "연" 필드 사용
-                "월": int(fields.get("월", 0) or 0),            # ✅ int로 변환
-                "연월": fields.get("연월", ""),
-                "지역": fields.get("지역", ""),
-                "영업점": fields.get("영업점", ""),
-                "매출": float(fields.get("매출", 0) or 0),
-                "재료비": float(fields.get("재료비", 0) or 0),
-                "재료비율": fields.get("재료비율", 0) or 0,     # ✅ 소수점
-                "인건비": float(fields.get("인건비", 0) or 0),
-                "인건비율": fields.get("인건비율", 0) or 0,
-                "경비": float(fields.get("경비", 0) or 0),
-                "경비율": fields.get("경비율", 0) or 0,
-                "매출총이익": float(fields.get("매출총이익", 0) or 0),
-                "매출총이익율": fields.get("매출총이익율", 0) or 0,
-                "법인비용": float(fields.get("법인비용", 0) or 0),
-                "영업이익": float(fields.get("영업이익", 0) or 0),
-                "영업이익율": fields.get("영업이익율", 0) or 0,
-            })
-
-        offset = data.get("offset")
-        if not offset:
-            break
-
-    return all_records
-
-# ===================== ✅ 캐시 추가 =====================
-_cache: dict = {}
-CACHE_TTL = 1800  # 10분
-
-def get_cached_records() -> list:
-    now = time.time()
-    if "records" in _cache and now - _cache["timestamp"] < CACHE_TTL:
-        print(f"[CACHE HIT] {len(_cache['records'])}건 캐시 반환")
-        return _cache["records"]
-    print("[CACHE MISS] Airtable 재조회 시작")
-    records = fetch_airtable_all()
-    _cache["records"] = records
-    _cache["timestamp"] = now
-    print(f"[CACHE SET] {len(records)}건 캐시 저장")
-    return records
+@app.get("/pnl/cache/status")
+def pnl_cache_status():
+    if "timestamp" not in _pnl_cache:
+        return {"cached": False}
+    age = int(time.time() - _pnl_cache["timestamp"])
+    return {
+        "cached": True,
+        "records": len(_pnl_cache.get("records", [])),
+        "age_seconds": age,
+        "expires_in": max(0, PNL_CACHE_TTL - age)
+    }
 
 @app.post("/pnl/cache/clear")
-def clear_cache():
-    _cache.clear()
-    return {"success": True, "message": "캐시 초기화 완료. 다음 요청 시 Airtable 재조회합니다."}
+def clear_pnl_cache():
+    _pnl_cache.clear()
+    return {"success": True, "message": "PnL 캐시 초기화 완료"}
 
-@app.get("/pnl/cache/status")
-def cache_status():
-    if "timestamp" not in _cache:
-        return {"cached": False}
-    age = int(time.time() - _cache["timestamp"])
-    return {
-        "cached": True,
-        "records": len(_cache.get("records", [])),
-        "age_seconds": age,
-        "expires_in": max(0, CACHE_TTL - age)
-    }
-
-_rates_cache: dict = {}
-RATES_CACHE_TTL = 600  # 10분
-
-def get_cached_rates():
-    now = time.time()
-    if "data" in _rates_cache and now - _rates_cache["timestamp"] < RATES_CACHE_TTL:
-        print(f"[RATES CACHE HIT]")
-        return _rates_cache["data"]
-    return None
-
-def set_rates_cache(data: dict):
-    _rates_cache["data"] = data
-    _rates_cache["timestamp"] = time.time()
-    print(f"[RATES CACHE SET]")
-
-@app.get("/rates")
-def get_rates():
-    try:
-        # ✅ 캐시 확인
-        cached = get_cached_rates()
-        if cached:
-            return cached
-
-        today_str = get_latest_date()
-        # ... 기존 로직 그대로 ...
-
-        result = {
-            "success": True,
-            "date": today_str,
-            "updated_at": datetime.now().strftime("%H:%M:%S"),
-            "data": rates
-        }
-
-        # ✅ 캐시 저장
-        set_rates_cache(result)
-        return result
-
-    except Exception as e:
-        return {"success": False, "error": str(e), "data": []}
-
-@app.get("/rates/cache/status")
-def rates_cache_status():
-    if "timestamp" not in _rates_cache:
-        return {"cached": False}
-    age = int(time.time() - _rates_cache["timestamp"])
-    return {
-        "cached": True,
-        "age_seconds": age,
-        "expires_in": max(0, RATES_CACHE_TTL - age)
-    }
-
-@app.post("/rates/cache/clear")
-def clear_rates_cache():
-    _rates_cache.clear()
-    return {"success": True, "message": "환율 캐시 초기화 완료"}
-# ======================================================
-
+# =====================
+# PnL 엔드포인트
+# =====================
 @app.get("/pnl/raw")
 def get_raw_data(year: int = None, month: int = None, region: str = None, store: str = None):
-    """Raw Data 조회"""
     try:
-        records = get_cached_records()  # ✅ 변경
-
-        # 필터링
-        if year:
-            records = [r for r in records if r["연도"] == year]
-        if month:
-            records = [r for r in records if r["월"] == month]
-        if region:
-            records = [r for r in records if r["지역"] == region]
-        if store:
-            records = [r for r in records if store in r["영업점"]]
-
-        return {
-            "success": True,
-            "count": len(records),
-            "data": records
-        }
+        records = get_cached_records()
+        if year:    records = [r for r in records if r["연도"] == year]
+        if month:   records = [r for r in records if r["월"] == month]
+        if region:  records = [r for r in records if r["지역"] == region]
+        if store:   records = [r for r in records if store in r["영업점"]]
+        return {"success": True, "count": len(records), "data": records}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
 @app.get("/pnl/monthly")
 def get_monthly(year: int, month: int):
-    """월별 손익 - 지역별 합산"""
     try:
-        records = get_cached_records()  # ✅ 변경
+        records = get_cached_records()
         records = [r for r in records if r["연도"] == year and r["월"] == month]
 
-        # 지역별 합산
         region_summary = {}
         for r in records:
             region = r["지역"]
             if region not in region_summary:
                 region_summary[region] = {
-                    "지역": region,
-                    "매출": 0, "재료비": 0, "인건비": 0,
+                    "지역": region, "매출": 0, "재료비": 0, "인건비": 0,
                     "경비": 0, "매출총이익": 0, "법인비용": 0,
                     "영업이익": 0, "영업점_수": 0, "영업점목록": []
                 }
             s = region_summary[region]
-            s["매출"] += r["매출"]
-            s["재료비"] += r["재료비"]
-            s["인건비"] += r["인건비"]
-            s["경비"] += r["경비"]
-            s["매출총이익"] += r["매출총이익"]
-            s["법인비용"] += r["법인비용"]
-            s["영업이익"] += r["영업이익"]
+            for key in ["매출","재료비","인건비","경비","매출총이익","법인비용","영업이익"]:
+                s[key] += r[key]
             s["영업점_수"] += 1
             s["영업점목록"].append(r)
 
-        # 비율 계산
         for region, s in region_summary.items():
-            매출 = s["매출"]
-            if 매출 > 0:
-                s["재료비율"] = f"{s['재료비']/매출*100:.2f}%"
-                s["인건비율"] = f"{s['인건비']/매출*100:.2f}%"
-                s["경비율"] = f"{s['경비']/매출*100:.2f}%"
-                s["매출총이익율"] = f"{s['매출총이익']/매출*100:.2f}%"
-                s["영업이익율"] = f"{s['영업이익']/매출*100:.2f}%"
+            m = s["매출"]
+            if m > 0:
+                s["재료비율"]    = f"{s['재료비']/m*100:.2f}%"
+                s["인건비율"]    = f"{s['인건비']/m*100:.2f}%"
+                s["경비율"]      = f"{s['경비']/m*100:.2f}%"
+                s["매출총이익율"] = f"{s['매출총이익']/m*100:.2f}%"
+                s["영업이익율"]  = f"{s['영업이익']/m*100:.2f}%"
             else:
-                s["재료비율"] = "0.00%"
-                s["인건비율"] = "0.00%"
-                s["경비율"] = "0.00%"
-                s["매출총이익율"] = "0.00%"
-                s["영업이익율"] = "0.00%"
+                s["재료비율"] = s["인건비율"] = s["경비율"] = s["매출총이익율"] = s["영업이익율"] = "0.00%"
 
-        return {
-            "success": True,
-            "year": year,
-            "month": month,
-            "data": list(region_summary.values())
-        }
+        return {"success": True, "year": year, "month": month, "data": list(region_summary.values())}
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
 @app.get("/pnl/cumulative")
 def get_cumulative(year: int, start_month: int = 1, end_month: int = 12):
-    """누계 손익"""
     try:
-        records = get_cached_records()  # ✅ 변경
-        records = [
-            r for r in records
-            if r["연도"] == year
-            and start_month <= r["월"] <= end_month
-        ]
+        records = get_cached_records()
+        records = [r for r in records if r["연도"]==year and start_month<=r["월"]<=end_month]
 
-        # 전체 합산
-        total = {
-            "매출": 0, "재료비": 0, "인건비": 0,
-            "경비": 0, "매출총이익": 0, "법인비용": 0, "영업이익": 0
-        }
-
-        # 지역별 합산
+        total  = {"매출":0,"재료비":0,"인건비":0,"경비":0,"매출총이익":0,"법인비용":0,"영업이익":0}
         region_summary = {}
-        for r in records:
-            for key in total:
-                total[key] += r[key]
 
+        for r in records:
+            for key in total: total[key] += r[key]
             region = r["지역"]
             if region not in region_summary:
                 region_summary[region] = {
-                    "지역": region,
-                    "매출": 0, "재료비": 0, "인건비": 0,
-                    "경비": 0, "매출총이익": 0, "법인비용": 0, "영업이익": 0
+                    "지역": region, "매출":0,"재료비":0,"인건비":0,
+                    "경비":0,"매출총이익":0,"법인비용":0,"영업이익":0
                 }
-            for key in ["매출", "재료비", "인건비", "경비", "매출총이익", "법인비용", "영업이익"]:
+            for key in ["매출","재료비","인건비","경비","매출총이익","법인비용","영업이익"]:
                 region_summary[region][key] += r[key]
 
-        # 비율 계산
         def add_rates(s):
             m = s["매출"]
             if m > 0:
-                s["재료비율"] = f"{s['재료비']/m*100:.2f}%"
-                s["인건비율"] = f"{s['인건비']/m*100:.2f}%"
-                s["경비율"] = f"{s['경비']/m*100:.2f}%"
+                s["재료비율"]    = f"{s['재료비']/m*100:.2f}%"
+                s["인건비율"]    = f"{s['인건비']/m*100:.2f}%"
+                s["경비율"]      = f"{s['경비']/m*100:.2f}%"
                 s["매출총이익율"] = f"{s['매출총이익']/m*100:.2f}%"
-                s["영업이익율"] = f"{s['영업이익']/m*100:.2f}%"
+                s["영업이익율"]  = f"{s['영업이익']/m*100:.2f}%"
             else:
                 s["재료비율"] = s["인건비율"] = s["경비율"] = s["매출총이익율"] = s["영업이익율"] = "0.00%"
             return s
 
         add_rates(total)
-        for region in region_summary:
-            add_rates(region_summary[region])
+        for region in region_summary: add_rates(region_summary[region])
 
         return {
-            "success": True,
-            "year": year,
-            "start_month": start_month,
-            "end_month": end_month,
-            "total": total,
-            "by_region": list(region_summary.values())
+            "success": True, "year": year,
+            "start_month": start_month, "end_month": end_month,
+            "total": total, "by_region": list(region_summary.values())
         }
     except Exception as e:
         return {"success": False, "error": str(e), "data": []}
 
 @app.get("/pnl/regions")
 def get_regions():
-    """지역 목록"""
     try:
-        records = get_cached_records()  # ✅ 변경
+        records = get_cached_records()
         regions = sorted(list(set(r["지역"] for r in records if r["지역"])))
         return {"success": True, "data": regions}
     except Exception as e:
@@ -759,9 +628,8 @@ def get_regions():
 
 @app.get("/pnl/stores")
 def get_stores(region: str = None):
-    """영업점 목록"""
     try:
-        records = get_cached_records()  # ✅ 변경
+        records = get_cached_records()
         if region:
             records = [r for r in records if r["지역"] == region]
         stores = sorted(list(set(r["영업점"] for r in records if r["영업점"])))
@@ -771,14 +639,9 @@ def get_stores(region: str = None):
 
 @app.get("/pnl/debug")
 def debug_airtable():
-    """Airtable 원본 데이터 확인"""
     try:
-        res = requests.get(
-            AIRTABLE_URL,
-            headers=AIRTABLE_HEADERS,
-            params={"pageSize": 3},
-            timeout=30
-        )
+        res = requests.get(AIRTABLE_URL, headers=AIRTABLE_HEADERS,
+                           params={"pageSize": 3}, timeout=30)
         return res.json()
     except Exception as e:
         return {"error": str(e)}
