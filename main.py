@@ -520,7 +520,7 @@ def fetch_airtable_all():
 
 # ===================== ✅ 캐시 추가 =====================
 _cache: dict = {}
-CACHE_TTL = 600  # 10분
+CACHE_TTL = 1800  # 10분
 
 def get_cached_records() -> list:
     now = time.time()
@@ -550,6 +550,62 @@ def cache_status():
         "age_seconds": age,
         "expires_in": max(0, CACHE_TTL - age)
     }
+
+_rates_cache: dict = {}
+RATES_CACHE_TTL = 600  # 10분
+
+def get_cached_rates():
+    now = time.time()
+    if "data" in _rates_cache and now - _rates_cache["timestamp"] < RATES_CACHE_TTL:
+        print(f"[RATES CACHE HIT]")
+        return _rates_cache["data"]
+    return None
+
+def set_rates_cache(data: dict):
+    _rates_cache["data"] = data
+    _rates_cache["timestamp"] = time.time()
+    print(f"[RATES CACHE SET]")
+
+@app.get("/rates")
+def get_rates():
+    try:
+        # ✅ 캐시 확인
+        cached = get_cached_rates()
+        if cached:
+            return cached
+
+        today_str = get_latest_date()
+        # ... 기존 로직 그대로 ...
+
+        result = {
+            "success": True,
+            "date": today_str,
+            "updated_at": datetime.now().strftime("%H:%M:%S"),
+            "data": rates
+        }
+
+        # ✅ 캐시 저장
+        set_rates_cache(result)
+        return result
+
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
+
+@app.get("/rates/cache/status")
+def rates_cache_status():
+    if "timestamp" not in _rates_cache:
+        return {"cached": False}
+    age = int(time.time() - _rates_cache["timestamp"])
+    return {
+        "cached": True,
+        "age_seconds": age,
+        "expires_in": max(0, RATES_CACHE_TTL - age)
+    }
+
+@app.post("/rates/cache/clear")
+def clear_rates_cache():
+    _rates_cache.clear()
+    return {"success": True, "message": "환율 캐시 초기화 완료"}
 # ======================================================
 
 @app.get("/pnl/raw")
