@@ -858,3 +858,367 @@ async def upload_pnl(file: UploadFile = File(...)):
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+python# =====================
+# requirements 추가 필요
+# openpyxl, python-multipart, pandas
+# =====================
+from fastapi import UploadFile, File, Form
+from io import BytesIO
+import openpyxl
+import pandas as pd
+
+# ── 행번호 → 영업점명 매핑 ──────────────────────────
+ROW_BRANCH_MAP = {
+    10: "일조 위아",      11: "일조 파워텍",
+    12: "SKON",           13: "장가항 위아",
+    14: "무석 하이닉스",  15: "광저우 HTWO",
+    16: "랑방 오리온",    18: "북경 기차빌딩",
+    19: "북경 만도연구소",20: "천진 모비스",
+    21: "연태 현대차",    23: "상해 케미컬",
+    24: "상해 모비스",    25: "상해 엘리베이터",
+    26: "중경 하이닉스",  27: "상숙 컨티넨탈",
+    28: "양중 중공업",    29: "무석 모비스",
+    30: "염성 모비스",    32: "몬테레이",
+    33: "트랜스리드",     34: "DBNR",
+    35: "핫도그 공장",    37: "조지아",
+    38: "서배너",         39: "HSAGP(SKON)",
+    41: "마잔",           42: "자프라",
+    44: "바스라",         46: "현대건설BNPP",
+    47: "아크부대",       49: "동명부대",
+}
+
+# ── Raw 파일 컬럼 매핑 ──────────────────────────────
+RAW1_ACTL_COLS = {
+    "revenue":          17,  # G열
+    "material_cost":    30,  # L열
+    "labor_cost":       36,  # R열
+    "expenses":         42,  # X열
+    "hq_allocated_cost":58,  # AG열
+}
+
+RAW1_ROW_MAP = {
+    10:[16], 11:[17], 12:[21], 13:[18], 14:[19], 15:[20], 16:[22],
+    18:[25], 19:[28], 20:[26], 21:[27],
+    23:[31], 24:[34], 25:[35], 26:[32], 27:[33], 28:[36], 29:[41],
+    30:[37,38,39,40],
+    32:[44,45,46,47], 33:[48], 34:[50], 35:[49],
+    37:[52], 38:[53], 39:[54],
+}
+RAW1_PREV_ONLY_MAP = {
+    41:[11], 42:[12], 44:[13], 46:[9], 47:[10], 49:[14],
+}
+
+# ── GL 파일 설정 ──────────────────────────────────
+GL_VALUE_COL   = 10
+GL_DEPT_COL    = 7
+GL_SUBJECT_COL = 2
+GL_ITEM_COL    = 3
+UNIT_DIV       = 1_000_000
+
+GL_SALES_SUBJ    = ('제품매출', '용역매출')
+GL_MATERIAL_SUBJ = ('원재료',)
+GL_LABOR_SUBJ    = ('노무비',)
+GL_EXPENSE_SUBJ  = ('경비',)
+GL_JISA_SUBJ     = ('일반관리비',)
+GL_EXCLUDE_ITEM  = ('대체',)
+GL_EXCLUDE_SEKMOK = ('년차수당(발생분)', '년차수당(미소진분)', '근속포상금')
+GL_RECLASSIFY_TO_LABOR = ('용역비',)
+
+GL_DEPT_ROW_MAP = {
+    'Marjan': 41, 'Jafurah': 42, 'Basrah': 44,
+    '현대건설BNPP': 46, '특전사아크부대': 47, '레바논 동명부대': 49,
+}
+JISA_PROP_MAP = {
+    '사우디지사': ['Marjan', 'Jafurah'],
+    'UAE지사':   ['현대건설BNPP', '특전사아크부대'],
+}
+JISA_FIXED_MAP = {
+    '이라크지사': [44],
+    '레바논지사': [49],
+}
+
+# ── 법인 파일 설정 ────────────────────────────────
+CORP_US_SHEETS = {
+    '조지아-월별 손익 _ 원화': 37,
+    '서배너-월별 손익 _ 원화': 38,
+    'HSAGP-월별 손익 _ 원화': 39,
+}
+CORP_CN1_SHEETS = {
+    '위아':10, '파워텍':11, '염성계':12, '장가항계':13,
+    '무석하이닉스계':14, '광저우계':15, '랑방계':16,
+}
+CORP_CN2_SHEETS = {
+    '식당':18, '북경만도연구소':19, '천진계':20, '연태계':21,
+}
+CORP_CN3_SHEETS = {
+    '韩华化学':23, '上海摩比斯店':24, '상해현대엘리베이터':25,
+    '중경계':26, '상숙계':27, '양중계':28, '무석계':29, '염성계':30,
+}
+
+CORP_DATA_ROW_COL = {8:'revenue', 15:'material_cost', 22:'labor_cost', 29:'expenses'}
+CORP_JISA_ROW     = 52
+CORP_JISA_COL     = 6
+
+CORP_MX_SHEET  = '3. 당월손익_기장기준 + 조정내역(원화환산)'
+CORP_MX_MAP    = {32:5, 33:11, 35:14}
+CORP_MX_ROWS   = {9:'revenue', 16:'material_cost', 23:'labor_cost', 30:'expenses'}
+CORP_MX_JISA   = (53, 18)
+
+
+# ── 공통: branch_name → branch_id 매핑 ──────────
+def get_branch_map():
+    res = supabase.table("branches").select("id, branch_name").execute()
+    return {b["branch_name"]: b["id"] for b in (res.data or [])}
+
+
+def row_data_to_supabase(row_lookup: dict, yr: int, mo: int) -> list:
+    """row_num → {field: value} 를 Supabase upsert 형식으로 변환"""
+    branch_map = get_branch_map()
+    rows = []
+    for row_num, fields in row_lookup.items():
+        branch_name = ROW_BRANCH_MAP.get(row_num)
+        if not branch_name:
+            continue
+        branch_id = branch_map.get(branch_name)
+        if not branch_id:
+            print(f"[WARN] branch_id 없음: {branch_name}")
+            continue
+        rev  = float(fields.get("revenue", 0) or 0)
+        mat  = float(fields.get("material_cost", 0) or 0)
+        lab  = float(fields.get("labor_cost", 0) or 0)
+        exp  = float(fields.get("expenses", 0) or 0)
+        corp = float(fields.get("hq_allocated_cost", 0) or 0)
+        rows.append({
+            "branch_id":         branch_id,
+            "year":              yr,
+            "month":             mo,
+            "revenue":           round(rev, 3),
+            "material_cost":     round(mat, 3),
+            "labor_cost":        round(lab, 3),
+            "expenses":          round(exp, 3),
+            "hq_allocated_cost": round(corp, 3),
+            "gross_profit":      round(rev - mat - lab - exp, 3),
+            "operating_profit":  round(rev - mat - lab - exp - corp, 3),
+        })
+    return rows
+
+
+# ── 파서: Raw 영업점별 요약 ──────────────────────
+def parse_raw_file(content: bytes) -> dict:
+    df = pd.read_excel(BytesIO(content), sheet_name='당월', header=None)
+    result = {}
+
+    def _sum(col_idx, excel_rows):
+        total = 0.0
+        for er in excel_rows:
+            try:
+                val = df.iloc[er - 1, col_idx]
+                total += float(val) if pd.notna(val) else 0.0
+            except:
+                pass
+        return total / 1000
+
+    for row_num, excel_rows in {**RAW1_ROW_MAP, **RAW1_PREV_ONLY_MAP}.items():
+        result[row_num] = {
+            field: _sum(col_idx, excel_rows)
+            for field, col_idx in RAW1_ACTL_COLS.items()
+        }
+    return result
+
+
+# ── 파서: GL 중동 ────────────────────────────────
+def parse_gl_file(content: bytes) -> dict:
+    df = pd.read_excel(BytesIO(content), header=None)
+    mask = (
+        ~df[GL_SUBJECT_COL].astype(str).str.contains('합계', na=True) &
+        ~df[GL_ITEM_COL].astype(str).str.contains('합계', na=True)
+    )
+    data = df[mask].iloc[2:].copy()
+    data = data[~data[GL_ITEM_COL].isin(GL_EXCLUDE_ITEM)]
+    data = data[~data[4].isin(GL_EXCLUDE_SEKMOK)]
+    result = {}
+
+    def _add(row_num, field, val):
+        if row_num not in result: result[row_num] = {}
+        result[row_num][field] = result[row_num].get(field, 0.0) + val / UNIT_DIV
+
+    for dept, row_num in GL_DEPT_ROW_MAP.items():
+        sub = data[data[GL_DEPT_COL] == dept]
+        _add(row_num, "revenue",       sub[sub[GL_SUBJECT_COL].isin(GL_SALES_SUBJ)][GL_VALUE_COL].sum())
+        _add(row_num, "material_cost", sub[sub[GL_SUBJECT_COL].isin(GL_MATERIAL_SUBJ)][11].sum())
+        labor = sub[sub[GL_SUBJECT_COL].isin(GL_LABOR_SUBJ)]
+        reclassify = sub[(sub[GL_SUBJECT_COL].isin(GL_EXPENSE_SUBJ)) &
+                         (sub[GL_ITEM_COL].isin(GL_RECLASSIFY_TO_LABOR))]
+        _add(row_num, "labor_cost", labor[GL_VALUE_COL].sum() + reclassify[GL_VALUE_COL].sum())
+        expense = sub[(sub[GL_SUBJECT_COL].isin(GL_EXPENSE_SUBJ)) &
+                      (~sub[GL_ITEM_COL].isin(GL_RECLASSIFY_TO_LABOR))]
+        _add(row_num, "expenses", expense[GL_VALUE_COL].sum())
+
+    for jisa_dept, shop_depts in JISA_PROP_MAP.items():
+        sub = data[(data[GL_DEPT_COL] == jisa_dept) &
+                   (data[GL_SUBJECT_COL].isin(GL_JISA_SUBJ))]
+        total = sub[GL_VALUE_COL].sum() / UNIT_DIV
+        if total == 0: continue
+        sales = {}
+        for dept in shop_depts:
+            rn = GL_DEPT_ROW_MAP.get(dept)
+            if rn is None: continue
+            s = data[data[GL_DEPT_COL] == dept]
+            sales[rn] = s[s[GL_SUBJECT_COL].isin(GL_SALES_SUBJ)][GL_VALUE_COL].sum()
+        total_sales = sum(sales.values())
+        for rn, sale in sales.items():
+            ratio = (sale / total_sales) if total_sales != 0 else (1 / len(sales))
+            if rn not in result: result[rn] = {}
+            result[rn]["hq_allocated_cost"] = result[rn].get("hq_allocated_cost", 0.0) + total * ratio
+
+    for jisa_dept, target_rows in JISA_FIXED_MAP.items():
+        sub = data[(data[GL_DEPT_COL] == jisa_dept) &
+                   (data[GL_SUBJECT_COL].isin(GL_JISA_SUBJ))]
+        total = sub[GL_VALUE_COL].sum() / UNIT_DIV
+        for rn in target_rows:
+            if rn not in result: result[rn] = {}
+            result[rn]["hq_allocated_cost"] = result[rn].get("hq_allocated_cost", 0.0) + total
+
+    return result
+
+
+# ── 파서: 법인 공통 (산동/북경/상해) ─────────────
+def parse_corp_cn(content: bytes, sheet_row_map: dict, jisa_sheet: str) -> dict:
+    result = {}
+    for sheet_name, row_num in sheet_row_map.items():
+        try:
+            df = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None)
+            result[row_num] = {}
+            for data_row, field in CORP_DATA_ROW_COL.items():
+                try:
+                    val = float(df.iloc[data_row - 1, CORP_JISA_COL - 1] or 0) / 1000
+                except:
+                    val = 0.0
+                result[row_num][field] = val
+        except:
+            continue
+
+    try:
+        df_j = pd.read_excel(BytesIO(content), sheet_name=jisa_sheet, header=None)
+        jisa_total = abs(float(df_j.iloc[CORP_JISA_ROW - 1, CORP_JISA_COL - 1] or 0) / 1000)
+        if jisa_total != 0:
+            total_sales = sum(result[r].get("revenue", 0) for r in result)
+            for r in result:
+                ratio = (result[r].get("revenue", 0) / total_sales) if total_sales != 0 else (1 / len(result))
+                result[r]["hq_allocated_cost"] = jisa_total * ratio
+    except:
+        pass
+    return result
+
+
+# ── 파서: 미국법인 ───────────────────────────────
+def parse_corp_us(content: bytes, mo: int) -> dict:
+    mo_col_idx = 3 + mo
+    DATA_ROW_COL = {8:"revenue", 15:"material_cost", 22:"labor_cost", 29:"expenses", 54:"hq_allocated_cost"}
+    result = {}
+    for sheet_name, row_num in CORP_US_SHEETS.items():
+        try:
+            df = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None)
+            result[row_num] = {}
+            for data_row, field in DATA_ROW_COL.items():
+                try:
+                    val = float(df.iloc[data_row - 1, mo_col_idx] or 0) / 1000
+                except:
+                    val = 0.0
+                result[row_num][field] = val
+        except:
+            continue
+    return result
+
+
+# ── 파서: 멕시코법인 ─────────────────────────────
+def parse_corp_mx(content: bytes) -> dict:
+    result = {}
+    try:
+        df = pd.read_excel(BytesIO(content), sheet_name=CORP_MX_SHEET, header=None)
+        for row_num, excel_col in CORP_MX_MAP.items():
+            result[row_num] = {}
+            for data_row, field in CORP_MX_ROWS.items():
+                try:
+                    val = float(df.iloc[data_row - 1, excel_col - 1] or 0) / 1000
+                except:
+                    val = 0.0
+                result[row_num][field] = val
+        try:
+            jisa_total = abs(float(df.iloc[CORP_MX_JISA[0]-1, CORP_MX_JISA[1]-1] or 0) / 1000)
+            if jisa_total != 0:
+                total_sales = sum(result[r].get("revenue", 0) for r in result)
+                for r in result:
+                    ratio = (result[r].get("revenue", 0) / total_sales) if total_sales != 0 else (1/len(result))
+                    result[r]["hq_allocated_cost"] = jisa_total * ratio
+        except:
+            pass
+    except:
+        pass
+    return result
+
+
+# ── 통합 업로드 엔드포인트 ───────────────────────
+@app.post("/pnl/upload-source")
+async def upload_source(
+    year:     int        = Form(...),
+    month:    int        = Form(...),
+    raw:      UploadFile = File(None),
+    gl:       UploadFile = File(None),
+    corp_us:  UploadFile = File(None),
+    corp_cn1: UploadFile = File(None),
+    corp_cn2: UploadFile = File(None),
+    corp_cn3: UploadFile = File(None),
+    corp_mx:  UploadFile = File(None),
+):
+    try:
+        row_lookup = {}
+
+        def _merge(parsed: dict):
+            for rn, fields in parsed.items():
+                if rn not in row_lookup: row_lookup[rn] = {}
+                for f, v in fields.items():
+                    row_lookup[rn][f] = row_lookup[rn].get(f, 0.0) + v
+
+        if raw:
+            _merge(parse_raw_file(await raw.read()))
+        if gl:
+            _merge(parse_gl_file(await gl.read()))
+        if corp_us:
+            _merge(parse_corp_us(await corp_us.read(), month))
+        if corp_cn1:
+            content = await corp_cn1.read()
+            _merge(parse_corp_cn(content, CORP_CN1_SHEETS, '복덕찬음'))
+        if corp_cn2:
+            content = await corp_cn2.read()
+            _merge(parse_corp_cn(content, CORP_CN2_SHEETS, '본사'))
+        if corp_cn3:
+            content = await corp_cn3.read()
+            _merge(parse_corp_cn(content, CORP_CN3_SHEETS, '본사'))
+        if corp_mx:
+            _merge(parse_corp_mx(await corp_mx.read()))
+
+        if not row_lookup:
+            return {"success": False, "error": "업로드된 파일이 없습니다."}
+
+        rows = row_data_to_supabase(row_lookup, year, month)
+        if not rows:
+            return {"success": False, "error": "변환된 데이터가 없습니다."}
+
+        supabase.table("pnl_monthly").upsert(
+            rows, on_conflict="branch_id,year,month"
+        ).execute()
+
+        _pnl_cache.clear()
+
+        return {
+            "success":  True,
+            "year":     year,
+            "month":    month,
+            "inserted": len(rows),
+            "message":  f"{year}년 {month}월 {len(rows)}개 영업점 저장 완료"
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
