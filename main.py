@@ -859,10 +859,6 @@ async def upload_pnl(file: UploadFile = File(...)):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-python# =====================
-# requirements 추가 필요
-# openpyxl, python-multipart, pandas
-# =====================
 from fastapi import UploadFile, File, Form
 from io import BytesIO
 import openpyxl
