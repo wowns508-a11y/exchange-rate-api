@@ -151,16 +151,16 @@ def fetch_smbs_monthly_avg(currency, year, month):
     return data.get(target_key, "")
 
 def fetch_smbs_month_end(currency, year, month):
-    """월말 - 해당 월만 정확히 조회"""
+    """월말"""
     data = fetch_smbs_xml(
         "MonLastStdExRate_xml.jsp", currency,
-        f"{year}-{month:02d}", f"{year}-{month:02d}",  # ✅ 해당 월만
+        f"{year-1}-{month:02d}", f"{year}-{month:02d}",
         "http://www.smbs.biz/ExRate/MonLastStdExRate.jsp"
     )
     target_key = f"{year}{month:02d}"
-    if target_key in data:
-        return data[target_key]
-    return ""
+    if target_key not in data and data:
+        target_key = sorted(data.keys())[-1]
+    return data.get(target_key, "")
 
 def calc_change(today_val, yesterday_val, decimal=2):
     try:
