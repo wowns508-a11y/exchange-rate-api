@@ -39,15 +39,6 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-AIRTABLE_TOKEN   = os.environ.get("AIRTABLE_TOKEN")
-AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE   = os.environ.get("AIRTABLE_TABLE")
-AIRTABLE_URL     = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE}"
-AIRTABLE_HEADERS = {
-    "Authorization": f"Bearer {AIRTABLE_TOKEN}",
-    "Content-Type": "application/json"
-}
-
 # =====================
 # 캐시
 # =====================
@@ -61,8 +52,8 @@ def get_cached_records() -> list:
     if "records" in _pnl_cache and now - _pnl_cache["timestamp"] < PNL_CACHE_TTL:
         print(f"[PNL CACHE HIT] {len(_pnl_cache['records'])}건")
         return _pnl_cache["records"]
-    print("[PNL CACHE MISS] Airtable 재조회")
-    records = fetch_airtable_all()
+    print("[PNL CACHE MISS] Supabase 재조회")
+    records = fetch_supabase_all()
     _pnl_cache["records"]   = records
     _pnl_cache["timestamp"] = now
     print(f"[PNL CACHE SET] {len(records)}건")
@@ -79,6 +70,69 @@ def set_rates_cache(data: dict):
     _rates_cache["data"]      = data
     _rates_cache["timestamp"] = time.time()
     print("[RATES CACHE SET]")
+
+# =====================
+# Supabase PnL 조회 (Airtable 대체)
+# =====================
+def fetch_supabase_all() -> list:
+    """
+    pnl_monthly + branches 조인해서 Framer가 기대하는 한국어 필드명으로 변환
+    """
+    all_records = []
+    page_size   = 1000
+    offset      = 0
+
+    while True:
+        res = supabase.table("pnl_monthly").select(
+            "year, month, revenue, material_cost, labor_cost, "
+            "expenses, hq_allocated_cost, gross_profit, operating_profit, "
+            "branches(branch_name, entity_name)"
+        ).range(offset, offset + page_size - 1).execute()
+
+        rows = res.data
+        if not rows:
+            break
+
+        for row in rows:
+            branch  = row.get("branches") or {}
+            revenue = float(row.get("revenue", 0) or 0)
+            mat     = float(row.get("material_cost", 0) or 0)
+            labor   = float(row.get("labor_cost", 0) or 0)
+            exp     = float(row.get("expenses", 0) or 0)
+            corp    = float(row.get("hq_allocated_cost", 0) or 0)
+            gross   = float(row.get("gross_profit", 0) or 0)
+            op      = float(row.get("operating_profit", 0) or 0)
+            m       = revenue if revenue != 0 else 1  # 분모 0 방지
+
+            year  = int(row.get("year", 0) or 0)
+            month = int(row.get("month", 0) or 0)
+
+            all_records.append({
+                "연도":      year,
+                "월":        month,
+                "연월":      f"{year}{month:02d}",
+                "지역":      branch.get("entity_name", ""),
+                "영업점":    branch.get("branch_name", ""),
+                "매출":          revenue,
+                "재료비":        mat,
+                "재료비율":      mat / m,
+                "인건비":        labor,
+                "인건비율":      labor / m,
+                "경비":          exp,
+                "경비율":        exp / m,
+                "매출총이익":    gross,
+                "매출총이익율":  gross / m,
+                "법인비용":      corp,
+                "영업이익":      op,
+                "영업이익율":    op / m,
+            })
+
+        if len(rows) < page_size:
+            break
+        offset += page_size
+
+    return all_records
+
 
 # =====================
 # 서울외국환중개 XML
@@ -151,7 +205,6 @@ def fetch_smbs_monthly_avg(currency, year, month):
     return data.get(target_key, "")
 
 def fetch_smbs_month_end(currency, year, month):
-    """월말"""
     data = fetch_smbs_xml(
         "MonLastStdExRate_xml.jsp", currency,
         f"{year-1}-{month:02d}", f"{year}-{month:02d}",
@@ -189,43 +242,6 @@ def fetch_er_open():
         print(f"ER Open 오류: {e}")
         return {}
 
-# =====================
-# Airtable
-# =====================
-def fetch_airtable_all():
-    all_records = []
-    offset = None
-    while True:
-        params = {"pageSize": 100}
-        if offset:
-            params["offset"] = offset
-        res  = requests.get(AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=30)
-        data = res.json()
-        for r in data.get("records", []):
-            f = r.get("fields", {})
-            all_records.append({
-                "연도": int(f.get("연", 0) or 0),
-                "월":   int(f.get("월", 0) or 0),
-                "연월": f.get("연월", ""),
-                "지역": f.get("지역", ""),
-                "영업점": f.get("영업점", ""),
-                "매출":     float(f.get("매출", 0) or 0),
-                "재료비":   float(f.get("재료비", 0) or 0),
-                "재료비율": f.get("재료비율", 0) or 0,
-                "인건비":   float(f.get("인건비", 0) or 0),
-                "인건비율": f.get("인건비율", 0) or 0,
-                "경비":     float(f.get("경비", 0) or 0),
-                "경비율":   f.get("경비율", 0) or 0,
-                "매출총이익":  float(f.get("매출총이익", 0) or 0),
-                "매출총이익율": f.get("매출총이익율", 0) or 0,
-                "법인비용":  float(f.get("법인비용", 0) or 0),
-                "영업이익":  float(f.get("영업이익", 0) or 0),
-                "영업이익율": f.get("영업이익율", 0) or 0,
-            })
-        offset = data.get("offset")
-        if not offset:
-            break
-    return all_records
 
 # =====================
 # 기본
@@ -525,7 +541,7 @@ def clear_pnl_cache():
     return {"success": True, "message": "PnL 캐시 초기화 완료"}
 
 # =====================
-# PnL 엔드포인트
+# PnL 엔드포인트 (Framer가 호출하는 API — 필드명 동일 유지)
 # =====================
 @app.get("/pnl/raw")
 def get_raw_data(year: int = None, month: int = None, region: str = None, store: str = None):
@@ -637,12 +653,3 @@ def get_stores(region: str = None):
         return {"success": True, "data": stores}
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-@app.get("/pnl/debug")
-def debug_airtable():
-    try:
-        res = requests.get(AIRTABLE_URL, headers=AIRTABLE_HEADERS,
-                           params={"pageSize": 3}, timeout=30)
-        return res.json()
-    except Exception as e:
-        return {"error": str(e)}
