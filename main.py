@@ -8,6 +8,11 @@ import os
 import bcrypt
 import time
 from supabase import create_client
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import StreamingResponse
+import openpyxl
+from openpyxl import Workbook
+from io import BytesIO
 
 urllib3.disable_warnings()
 
@@ -651,5 +656,205 @@ def get_stores(region: str = None):
             records = [r for r in records if r["지역"] == region]
         stores = sorted(list(set(r["영업점"] for r in records if r["영업점"])))
         return {"success": True, "data": stores}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# =====================
+# 엑셀 양식 다운로드
+# =====================
+@app.get("/pnl/template")
+def download_template():
+    """업로드용 빈 양식 엑셀 다운로드"""
+    try:
+        # branches 목록 조회
+        branches_res = supabase.table("branches").select(
+            "id, branch_name, entity_name"
+        ).eq("is_active", True).execute()
+        branches = branches_res.data or []
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "손익입력"
+
+        # 헤더
+        headers = ["지역", "영업점", "연도", "월",
+                   "매출", "재료비", "인건비", "경비",
+                   "법인비용", "매출총이익", "영업이익"]
+        ws.append(headers)
+
+        # 헤더 스타일
+        from openpyxl.styles import Font, PatternFill, Alignment
+        header_fill = PatternFill("solid", fgColor="1E293B")
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+
+        # 영업점 목록 미리 채워넣기
+        for b in branches:
+            ws.append([
+                b["entity_name"],  # 지역
+                b["branch_name"],  # 영업점
+                "",  # 연도 (입력)
+                "",  # 월 (입력)
+                "", "", "", "", "", "", ""  # 수치 (입력)
+            ])
+
+        # 열 너비
+        col_widths = [10, 20, 8, 6, 12, 12, 12, 12, 12, 14, 14]
+        for i, w in enumerate(col_widths, 1):
+            ws.column_dimensions[ws.cell(1, i).column_letter].width = w
+
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=pnl_template.xlsx"}
+        )
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# =====================
+# Raw Data 엑셀 다운로드
+# =====================
+@app.get("/pnl/export")
+def export_pnl(year: int = None, month: int = None, region: str = None):
+    """현재 필터 기준 손익 데이터 엑셀 다운로드"""
+    try:
+        records = get_cached_records()
+        if year:   records = [r for r in records if r["연도"] == year]
+        if month:  records = [r for r in records if r["월"] == month]
+        if region: records = [r for r in records if r["지역"] == region]
+
+        # 정렬: 지역 → 영업점 → 연도 → 월
+        records = sorted(records, key=lambda r: (r["지역"], r["영업점"], r["연도"], r["월"]))
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "손익데이터"
+
+        headers = ["지역", "영업점", "연도", "월",
+                   "매출", "재료비", "재료비율",
+                   "인건비", "인건비율",
+                   "경비", "경비율",
+                   "매출총이익", "매출총이익율",
+                   "법인비용", "영업이익", "영업이익율"]
+        ws.append(headers)
+
+        from openpyxl.styles import Font, PatternFill, Alignment
+        header_fill = PatternFill("solid", fgColor="1E293B")
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+
+        def pct(v):
+            return f"{v*100:.1f}%"
+
+        for r in records:
+            ws.append([
+                r["지역"], r["영업점"], r["연도"], r["월"],
+                r["매출"], r["재료비"], pct(r["재료비율"]),
+                r["인건비"], pct(r["인건비율"]),
+                r["경비"], pct(r["경비율"]),
+                r["매출총이익"], pct(r["매출총이익율"]),
+                r["법인비용"], r["영업이익"], pct(r["영업이익율"]),
+            ])
+
+        # 열 너비
+        col_widths = [10, 20, 8, 6, 12, 12, 10, 12, 10, 12, 10, 14, 12, 12, 14, 12]
+        for i, w in enumerate(col_widths, 1):
+            ws.column_dimensions[ws.cell(1, i).column_letter].width = w
+
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        filename = f"pnl_export_{year or 'all'}_{month or 'all'}.xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# =====================
+# 엑셀 업로드 → Supabase 저장
+# =====================
+@app.post("/pnl/upload")
+async def upload_pnl(file: UploadFile = File(...)):
+    """
+    엑셀 업로드 → pnl_monthly 테이블에 upsert
+    컬럼: 지역, 영업점, 연도, 월, 매출, 재료비, 인건비, 경비, 법인비용, 매출총이익, 영업이익
+    """
+    try:
+        contents = await file.read()
+        wb = openpyxl.load_workbook(BytesIO(contents), data_only=True)
+        ws = wb.active
+
+        # branches 맵 (branch_name → id)
+        branches_res = supabase.table("branches").select("id, branch_name, entity_name").execute()
+        branch_map = {b["branch_name"]: b["id"] for b in (branches_res.data or [])}
+
+        rows_to_upsert = []
+        errors = []
+
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not any(row):  # 빈 행 스킵
+                continue
+
+            지역, 영업점, 연도, 월, 매출, 재료비, 인건비, 경비, 법인비용, 매출총이익, 영업이익 = (
+                row[0], row[1], row[2], row[3], row[4],
+                row[5], row[6], row[7], row[8], row[9], row[10]
+            )
+
+            # 영업점 → branch_id 매핑
+            branch_id = branch_map.get(str(영업점).strip())
+            if not branch_id:
+                errors.append(f"행 {row_idx}: '{영업점}' 영업점을 찾을 수 없음")
+                continue
+
+            if not 연도 or not 월:
+                errors.append(f"행 {row_idx}: 연도/월 누락")
+                continue
+
+            rows_to_upsert.append({
+                "branch_id":        branch_id,
+                "year":             int(연도),
+                "month":            int(월),
+                "revenue":          float(매출 or 0),
+                "material_cost":    float(재료비 or 0),
+                "labor_cost":       float(인건비 or 0),
+                "expenses":         float(경비 or 0),
+                "hq_allocated_cost": float(법인비용 or 0),
+                "gross_profit":     float(매출총이익 or 0),
+                "operating_profit": float(영업이익 or 0),
+            })
+
+        if not rows_to_upsert:
+            return {"success": False, "error": "저장할 데이터가 없습니다.", "errors": errors}
+
+        # upsert (branch_id + year + month 기준 중복 처리)
+        supabase.table("pnl_monthly").upsert(
+            rows_to_upsert,
+            on_conflict="branch_id,year,month"
+        ).execute()
+
+        # 캐시 초기화 (새 데이터 반영)
+        _pnl_cache.clear()
+
+        return {
+            "success": True,
+            "inserted": len(rows_to_upsert),
+            "errors": errors,
+            "message": f"{len(rows_to_upsert)}건 저장 완료"
+        }
+
     except Exception as e:
         return {"success": False, "error": str(e)}
