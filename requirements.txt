@@ -7,3 +7,4 @@ supabase
 bcrypt
 openpyxl
 python-multipart
+pandas
