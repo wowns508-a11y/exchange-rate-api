@@ -8,3 +8,4 @@ bcrypt
 openpyxl
 python-multipart
 pandas
+holidays
