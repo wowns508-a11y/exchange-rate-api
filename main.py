@@ -1242,3 +1242,53 @@ async def debug_sheets(file: UploadFile = File(...)):
         return {"success": True, "sheets": wb.sheetnames}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+from pydantic import BaseModel
+from fastapi import Header, HTTPException
+
+# 1. 요청 데이터를 받기 위한 모델 정의
+class UpdatePasswordRequest(BaseModel):
+    currentPassword: str
+    newPassword: str
+
+# 2. 비밀번호 변경 엔드포인트
+@app.post("/user/update")
+async def update_password(
+    request: UpdatePasswordRequest, 
+    authorization: str = Header(None)
+):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="인증 토큰이 없습니다.")
+    
+    # Bearer 토큰 추출
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        # ① 현재 토큰으로 유저 정보 가져오기
+        user = supabase.auth.get_user(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="유효하지 않은 세션입니다.")
+        
+        user_id = user.user.id
+        user_email = user.user.email
+
+        # ② 보안을 위해 현재 비밀번호로 재인증 (본인 확인)
+        try:
+            supabase.auth.sign_in_with_password({
+                "email": user_email,
+                "password": request.currentPassword
+            })
+        except Exception:
+            raise HTTPException(status_code=400, detail="현재 비밀번호가 일치하지 않습니다.")
+
+        # ③ 비밀번호 업데이트 (Admin 권한 사용)
+        # SUPABASE_SERVICE_ROLE_KEY로 생성된 클라이언트여야 합니다.
+        supabase.auth.admin.update_user_by_id(
+            user_id, 
+            {"password": request.newPassword}
+        )
+        
+        return {"message": "성공"}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
