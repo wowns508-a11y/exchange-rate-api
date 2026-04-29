@@ -91,6 +91,7 @@ def fetch_supabase_all() -> list:
         res = supabase.table("pnl_monthly").select(
             "year, month, revenue, material_cost, labor_cost, "
             "expenses, hq_allocated_cost, gross_profit, operating_profit, "
+            "ops_labor_cost, ops_expenses, division_cost, operating_profit_2, "
             "branches(branch_name, entity_name)"
         ).range(offset, offset + page_size - 1).execute()
 
@@ -107,6 +108,10 @@ def fetch_supabase_all() -> list:
             corp    = float(row.get("hq_allocated_cost", 0) or 0)
             gross   = float(row.get("gross_profit", 0) or 0)
             op      = float(row.get("operating_profit", 0) or 0)
+            ops_labor = float(row.get("ops_labor_cost", 0) or 0)
+            ops_exp   = float(row.get("ops_expenses", 0) or 0)
+            div_cost  = float(row.get("division_cost", 0) or 0)
+            op2       = float(row.get("operating_profit_2", 0) or 0)
             m       = revenue if revenue != 0 else 1  # 분모 0 방지
 
             year  = int(row.get("year", 0) or 0)
@@ -130,6 +135,14 @@ def fetch_supabase_all() -> list:
                 "법인비용":      corp,
                 "영업이익":      op,
                 "영업이익율":    op / m,
+                "운영팀인건비":    ops_labor,
+                "운영팀인건비율":  ops_labor / m,
+                "운영팀경비":      ops_exp,
+                "운영팀경비율":    ops_exp / m,
+                "사업부공통비":    div_cost,
+                "사업부공통비율":  div_cost / m,
+                "영업이익Ⅱ":      op2,
+                "영업이익Ⅱ율":    op2 / m,
             })
 
         if len(rows) < page_size:
