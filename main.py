@@ -475,7 +475,7 @@ def register(data: dict):
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         supabase.table("users").insert({
             "email": email, "name": name,
-            "employee_id": employee_id, "password": hashed, "approved": False,
+            "employee_id": employee_id, "password": hashed, "approved": True,
         }).execute()
         return {"success": True, "message": "계정 신청이 완료됐습니다. 관리자 승인 후 로그인 가능합니다."}
     except Exception as e:
