@@ -1310,3 +1310,41 @@ async def get_schedules():
         item['d_day'] = delta  # 0이면 당일, 양수면 남은 날짜, 음수면 지난 날짜
         
     return schedules
+
+import holidays
+from datetime import date, timedelta
+
+# 한국 공휴일 객체 생성
+kr_holidays = holidays.KR()
+
+@app.get("/schedules")
+async def get_schedules():
+    # 1. DB에서 사용자 정의 일정 가져오기
+    response = supabase.table("tax_schedules").select("*").order("due_date").execute()
+    db_schedules = response.data
+    
+    today = date.today()
+    
+    # 2. 이번 달 전후 1년치 공휴일 자동 생성 (캐싱 효과)
+    auto_holidays = []
+    current_year = today.year
+    for date_val, name in holidays.KR(years=[current_year, current_year + 1]).items():
+        auto_holidays.append({
+            "id": f"holiday-{date_val}",
+            "title": name,
+            "due_date": date_val.isoformat(),
+            "category": "공휴일",
+            "is_important": True,
+            "target_entity": "대한민국",
+            "description": "법정공휴일"
+        })
+
+    # 3. DB 일정 + 자동 공휴일 합치기
+    all_schedules = db_schedules + auto_holidays
+    
+    # 4. D-Day 계산
+    for item in all_schedules:
+        due = date.fromisoformat(item['due_date'])
+        item['d_day'] = (due - today).days
+        
+    return all_schedules
