@@ -1218,3 +1218,14 @@ async def upload_source(
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@app.post("/pnl/debug-sheets")
+async def debug_sheets(file: UploadFile = File(...)):
+    """업로드된 엑셀 파일의 시트 목록 반환"""
+    try:
+        import openpyxl
+        content = await file.read()
+        wb = openpyxl.load_workbook(BytesIO(content), read_only=True)
+        return {"success": True, "sheets": wb.sheetnames}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
