@@ -1292,3 +1292,21 @@ async def update_password(
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+from datetime import date
+
+@app.get("/schedules")
+async def get_schedules():
+    # 1. DB에서 전체 일정 조회
+    response = supabase.table("tax_schedules").select("*").order("due_date").execute()
+    schedules = response.data
+    
+    today = date.today()
+    
+    # 2. 각 일정별 D-Day 계산 로직 추가
+    for item in schedules:
+        due = date.fromisoformat(item['due_date'])
+        delta = (due - today).days
+        item['d_day'] = delta  # 0이면 당일, 양수면 남은 날짜, 음수면 지난 날짜
+        
+    return schedules
