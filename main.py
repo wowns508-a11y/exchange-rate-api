@@ -1300,45 +1300,27 @@ from datetime import date
 @app.get("/schedules")
 async def get_schedules():
     try:
-        # 1. DB 일정 가져오기
         response = supabase.table("tax_schedules").select("*").order("due_date").execute()
         db_schedules = response.data if response.data else []
         
         today = date.today()
-        # 2026년을 포함하여 앞뒤 연도 설정
-        target_years = [today.year, today.year + 1]
-        
-        # 2. 한국 공휴일 데이터 강제 생성
-        # 'KR' 대신 'SouthKorea'를 써보거나, 명시적으로 language를 지정할 수도 있습니다.
-        kr_holidays = holidays.KR(years=target_years)
+        kr_holidays = holidays.KR(years=[today.year, today.year + 1])
         
         auto_holidays = []
-        # kr_holidays.items()가 작동하지 않을 경우를 대비해 list로 변환 시도
-        holiday_list = list(kr_holidays.items())
-        
-        for h_date, h_name in holiday_list:
+        for h_date, h_name in kr_holidays.items():
             auto_holidays.append({
                 "id": f"holiday-{h_date.isoformat()}",
-                "title": str(h_name), # 객체일 경우를 대비해 문자열 변환
+                "title": str(h_name),
                 "due_date": h_date.isoformat(),
-                "category": "공휴일",
-                "is_important": True,
+                "category": "공휴일", # 달력 색상 변경용
+                "is_important": False,
                 "target_entity": "대한민국",
-                "description": "법정공휴일"
+                "d_day": (h_date - today).days
             })
 
-        # 3. 데이터 통합 및 D-Day 계산
         combined = db_schedules + auto_holidays
-        
-        for item in combined:
-            due = date.fromisoformat(item['due_date'])
-            item['d_day'] = (due - today).days
-
-        # 4. 날짜순 정렬 (람다식 사용)
         combined.sort(key=lambda x: x['due_date'])
             
         return combined
-
     except Exception as e:
-        # 에러가 난다면 브라우저에서 바로 확인할 수 있게 리턴
-        return [{"error_detail": str(e), "message": "공휴일 로드 중 오류 발생"}]
+        return [{"error": str(e)}]
