@@ -1312,39 +1312,46 @@ async def get_schedules():
     return schedules
 
 import holidays
-from datetime import date, timedelta
-
-# 한국 공휴일 객체 생성
-kr_holidays = holidays.KR()
+from datetime import date
 
 @app.get("/schedules")
 async def get_schedules():
-    # 1. DB에서 사용자 정의 일정 가져오기
-    response = supabase.table("tax_schedules").select("*").order("due_date").execute()
-    db_schedules = response.data
-    
-    today = date.today()
-    
-    # 2. 이번 달 전후 1년치 공휴일 자동 생성 (캐싱 효과)
-    auto_holidays = []
-    current_year = today.year
-    for date_val, name in holidays.KR(years=[current_year, current_year + 1]).items():
-        auto_holidays.append({
-            "id": f"holiday-{date_val}",
-            "title": name,
-            "due_date": date_val.isoformat(),
-            "category": "공휴일",
-            "is_important": True,
-            "target_entity": "대한민국",
-            "description": "법정공휴일"
-        })
-
-    # 3. DB 일정 + 자동 공휴일 합치기
-    all_schedules = db_schedules + auto_holidays
-    
-    # 4. D-Day 계산
-    for item in all_schedules:
-        due = date.fromisoformat(item['due_date'])
-        item['d_day'] = (due - today).days
+    try:
+        # 1. DB 일정 가져오기
+        response = supabase.table("tax_schedules").select("*").order("due_date").execute()
+        db_schedules = response.data if response.data else []
         
-    return all_schedules
+        today = date.today()
+        current_year = today.year
+        
+        # 2. 한국 공휴일 데이터 가져오기 (items() 사용)
+        kr_holidays = holidays.KR(years=[current_year, current_year + 1])
+        auto_holidays = []
+        
+        for holiday_date, name in kr_holidays.items():
+            auto_holidays.append({
+                "id": f"holiday-{holiday_date}",
+                "title": name,
+                "due_date": holiday_date.isoformat(),
+                "category": "공휴일",
+                "is_important": True,
+                "target_entity": "대한민국",
+                "description": "법정공휴일"
+            })
+
+        # 3. 데이터 통합 (순서 중요: 합친 후 정렬)
+        combined = db_schedules + auto_holidays
+        
+        # 4. D-Day 계산 및 최종 데이터 구성
+        for item in combined:
+            due = date.fromisoformat(item['due_date'])
+            item['d_day'] = (due - today).days
+
+        # 날짜순으로 정렬해서 가독성 높이기
+        combined.sort(key=lambda x: x['due_date'])
+            
+        return combined
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return [] # 에러 시 빈 배열 리턴
