@@ -13,6 +13,8 @@ from fastapi.responses import StreamingResponse
 import openpyxl
 from openpyxl import Workbook
 from io import BytesIO
+import holidays
+from datetime import date
 
 urllib3.disable_warnings()
 
@@ -1310,9 +1312,6 @@ async def get_schedules():
         item['d_day'] = delta  # 0이면 당일, 양수면 남은 날짜, 음수면 지난 날짜
         
     return schedules
-
-import holidays
-from datetime import date
 
 @app.get("/schedules")
 async def get_schedules():
