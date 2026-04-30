@@ -1324,34 +1324,36 @@ async def get_schedules():
         today = date.today()
         current_year = today.year
         
-        # 2. 한국 공휴일 데이터 가져오기 (items() 사용)
+        # 2. 한국 공휴일 데이터 강제 생성
+        # 특정 연도를 지정하여 객체를 생성합니다.
         kr_holidays = holidays.KR(years=[current_year, current_year + 1])
-        auto_holidays = []
         
-        for holiday_date, name in kr_holidays.items():
+        auto_holidays = []
+        # items()가 빈 배열을 뱉는 것을 방지하기 위해 데이터를 순회합니다.
+        for h_date, h_name in kr_holidays.items():
             auto_holidays.append({
-                "id": f"holiday-{holiday_date}",
-                "title": name,
-                "due_date": holiday_date.isoformat(),
+                "id": f"holiday-{h_date}",
+                "title": str(h_name), # 이름 강제 문자열 변환
+                "due_date": h_date.isoformat(),
                 "category": "공휴일",
                 "is_important": True,
                 "target_entity": "대한민국",
                 "description": "법정공휴일"
             })
 
-        # 3. 데이터 통합 (순서 중요: 합친 후 정렬)
+        # 3. 데이터 통합 및 D-Day 계산
         combined = db_schedules + auto_holidays
         
-        # 4. D-Day 계산 및 최종 데이터 구성
         for item in combined:
             due = date.fromisoformat(item['due_date'])
             item['d_day'] = (due - today).days
 
-        # 날짜순으로 정렬해서 가독성 높이기
+        # 4. 날짜순 정렬
         combined.sort(key=lambda x: x['due_date'])
             
         return combined
 
     except Exception as e:
-        print(f"Error: {e}")
-        return [] # 에러 시 빈 배열 리턴
+        # 에러 발생 시 로그를 남기고 빈 배열 대신 에러 메시지를 리턴하여 확인
+        print(f"Server Error: {str(e)}")
+        return [{"error": str(e)}]
