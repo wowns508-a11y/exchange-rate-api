@@ -1297,6 +1297,17 @@ async def update_password(
 
 from datetime import date
 
+app = FastAPI()
+
+class ScheduleItem(BaseModel):
+    id: str = None
+    title: str
+    due_date: str
+    category: str
+    target_entity: str = "본사"
+    is_important: bool = False
+    is_done: bool = False # ✅ 완료 상태 추가
+
 @app.get("/schedules")
 async def get_schedules():
     try:
@@ -1305,40 +1316,48 @@ async def get_schedules():
         
         today = date.today()
         kr_holidays = holidays.KR(years=[today.year, today.year + 1])
-        
         auto_holidays = []
         for h_date, h_name in kr_holidays.items():
             auto_holidays.append({
                 "id": f"holiday-{h_date.isoformat()}",
                 "title": str(h_name),
                 "due_date": h_date.isoformat(),
-                "category": "공휴일", # 달력 색상 변경용
-                "is_important": False,
+                "category": "공휴일",
                 "target_entity": "대한민국",
-                "d_day": (h_date - today).days
+                "is_done": False
             })
 
         combined = db_schedules + auto_holidays
-        combined.sort(key=lambda x: x['due_date'])
+        for item in combined:
+            due = date.fromisoformat(item['due_date'])
+            item['d_day'] = (due - today).days
             
         return combined
     except Exception as e:
         return [{"error": str(e)}]
 
-# 일정 삭제 API
+# ✅ 상태 업데이트 API (체크박스용)
+@app.patch("/schedules/{schedule_id}")
+async def update_schedule(schedule_id: str, data: dict):
+    try:
+        supabase.table("tax_schedules").update(data).eq("id", schedule_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/schedules")
+async def add_schedule(item: ScheduleItem):
+    try:
+        data = item.dict(exclude_none=True)
+        res = supabase.table("tax_schedules").insert(data).execute()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/schedules/{schedule_id}")
 async def delete_schedule(schedule_id: str):
     try:
         supabase.table("tax_schedules").delete().eq("id", schedule_id).execute()
         return {"status": "success"}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# 일정 추가 API (이미 구현되어 있다면 확인만 하세요)
-@app.post("/schedules")
-async def add_schedule(item: dict):
-    try:
-        supabase.table("tax_schedules").insert(item).execute()
-        return {"status": "success"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
