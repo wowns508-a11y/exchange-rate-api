@@ -1324,3 +1324,21 @@ async def get_schedules():
         return combined
     except Exception as e:
         return [{"error": str(e)}]
+
+# 일정 삭제 API
+@app.delete("/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: str):
+    try:
+        supabase.table("tax_schedules").delete().eq("id", schedule_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# 일정 추가 API (이미 구현되어 있다면 확인만 하세요)
+@app.post("/schedules")
+async def add_schedule(item: dict):
+    try:
+        supabase.table("tax_schedules").insert(item).execute()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
