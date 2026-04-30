@@ -24,6 +24,13 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["*"], # 모든 도메인 허용
+    allow_credentials=True,
+    allow_methods=["*"], # GET, POST, DELETE, PATCH 모두 허용
+    allow_headers=["*"],
+)
+app.add_middleware(
+    CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1299,15 +1306,6 @@ async def update_password(
 
 from datetime import date
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # 모든 도메인 허용
-    allow_credentials=True,
-    allow_methods=["*"], # GET, POST, DELETE, PATCH 모두 허용
-    allow_headers=["*"],
-)
 
 class ScheduleItem(BaseModel):
     id: str = None
