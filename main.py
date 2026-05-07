@@ -1369,3 +1369,11 @@ async def delete_schedule(schedule_id: str):
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/auth/users")
+def get_all_users():
+    try:
+        result = supabase.table("users").select("employee_id, name, email, role, created_at, approved").execute()
+        return {"success": True, "data": result.data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
