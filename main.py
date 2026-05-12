@@ -17,10 +17,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import holidays
 from datetime import date
+from notify_router import router as notify_router
 
 urllib3.disable_warnings()
 
 app = FastAPI()
+
+app.include_router(notify_router)
 
 app.add_middleware(
     CORSMiddleware,
