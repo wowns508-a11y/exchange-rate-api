@@ -448,29 +448,41 @@ def get_weekly(currency: str = "USD"):
         return {"success": False, "error": str(e), "data": []}
 
 @app.get("/rates/monthly")
-def get_monthly_rates(currency: str = "USD"):
-    """최근 30일 환율 데이터"""
+def get_monthly(currency: str = "USD"):
     try:
-        end_date = datetime.today()
-        start_date = end_date - timedelta(days=40)  # 주말/공휴일 감안해서 넉넉하게
-        
         result = []
-        current = end_date
+        date   = datetime.now()
+        count  = 0
         
-        while current >= start_date and len(result) < 30:
-            date_str = current.strftime("%Y%m%d")
-            # 기존에 쓰던 환율 fetch 함수 호출 (weekly랑 동일한 방식)
-            rate = fetch_rate_for_date(currency, date_str)
-            if rate is not None:
+        # 30개의 유효한 데이터를 찾을 때까지 반복
+        while count < 30:
+            date_str = date.strftime("%Y%m%d")
+            # weekly와 동일하게 fetch_smbs_today 함수를 사용하거나 
+            # 기존 fetch_rate_for_date를 유지하되 내부 로직을 통일합니다.
+            val = fetch_smbs_today(currency, date_str) 
+            
+            if val:
                 result.append({
-                    "date": current.strftime("%m/%d"),
-                    "value": rate
+                    "date": f"{date.month}/{date.day}",
+                    "value": float(val.replace(",", "")) if isinstance(val, str) else float(val),
+                    "full_date": date_str,
                 })
-            current -= timedelta(days=1)
+                count += 1
+            
+            # 하루씩 과거로 이동
+            date -= timedelta(days=1)
+            
+            # 무한 루프 방지를 위한 안전장치 (선택사항: 예 - 60일치까지만 조회)
+            # if (datetime.now() - date).days > 60: break
+
+        # 과거 데이터가 먼저 오도록 정렬
+        result.reverse()
         
-        return {"success": True, "data": result}
+        return {"success": True, "currency": currency, "data": result}
+        
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        # 에러 응답 구조도 weekly와 동일하게 'error'와 빈 'data' 리스트 반환
+        return {"success": False, "error": str(e), "data": []}
 
 @app.get("/rates/cache/status")
 def rates_cache_status():
