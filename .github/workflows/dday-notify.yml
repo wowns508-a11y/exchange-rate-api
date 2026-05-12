@@ -1,0 +1,14 @@
+name: D-Day 마감 알림
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 매일 한국시간 오전 9시 (UTC 00:00)
+  workflow_dispatch:      # 수동 테스트용
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 마감 일정 알림 발송
+        run: |
+          curl -X POST "https://exchange-rate-api-production-6e2f.up.railway.app/notify/dday?secret=hgf2026cron"
