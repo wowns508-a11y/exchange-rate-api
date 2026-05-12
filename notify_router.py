@@ -34,7 +34,7 @@ async def get_schedules_by_dday(days: int) -> list[dict]:
     """D-{days}인 미완료 일정 조회"""
     target_date = (date.today() + timedelta(days=days)).isoformat()
     url = (
-        f"{SUPABASE_URL}/rest/v1/schedules"
+        f"{SUPABASE_URL}/rest/v1/tax_schedules"
         f"?due_date=eq.{target_date}"
         f"&is_done=eq.false"
         f"&category=neq.공휴일"
