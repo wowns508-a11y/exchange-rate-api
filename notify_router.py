@@ -132,10 +132,10 @@ def build_email_html(schedules: list[dict], days: int) -> str:
         due = str(s.get("due_date", ""))[:10]
         rows += f"""
         <tr>
-            <td style="padding:14px 0;border-bottom:1px solid #f0f0f0;font-size:15px;color:#1d1d1f;font-weight:600;letter-spacing:-0.374px;">{s.get("title", "")}</td>
-            <td style="padding:14px 16px;border-bottom:1px solid #f0f0f0;font-size:13px;color:#7a7a7a;letter-spacing:-0.224px;">{s.get("category", "")}</td>
-            <td style="padding:14px 16px;border-bottom:1px solid #f0f0f0;font-size:13px;color:#7a7a7a;letter-spacing:-0.224px;">{s.get("target_entity", "")}</td>
-            <td style="padding:14px 0;border-bottom:1px solid #f0f0f0;font-size:13px;color:{urgency_color};font-weight:600;letter-spacing:-0.224px;text-align:right;">{due}</td>
+            <td style="padding:14px 0;border-bottom:1px solid #f0f0f0;font-size:15px;color:#1d1d1f;font-weight:600;letter-spacing:-0.374px;font-family:{FONT};">{s.get("title", "")}</td>
+            <td style="padding:14px 16px;border-bottom:1px solid #f0f0f0;font-size:13px;color:#7a7a7a;letter-spacing:-0.224px;font-family:{FONT};">{s.get("category", "")}</td>
+            <td style="padding:14px 16px;border-bottom:1px solid #f0f0f0;font-size:13px;color:#7a7a7a;letter-spacing:-0.224px;font-family:{FONT};">{s.get("target_entity", "")}</td>
+            <td style="padding:14px 0;border-bottom:1px solid #f0f0f0;font-size:13px;color:{urgency_color};font-weight:600;letter-spacing:-0.224px;text-align:right;font-family:{FONT};">{due}</td>
         </tr>
         """
 
@@ -146,7 +146,7 @@ def build_email_html(schedules: list[dict], days: int) -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" rel="stylesheet">
 </head>
-<body style="margin:0;padding:0;background:#f5f5f7;font-family:{FONT};">
+<body style="margin:0;padding:0;background:#f5f5f7;font-family:{FONT};-webkit-font-smoothing:antialiased;">
     <div style="max-width:580px;margin:48px auto;background:#ffffff;border-radius:18px;overflow:hidden;">
 
         <!-- 헤더 (Apple 글로벌 nav — pure black) -->
