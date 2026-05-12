@@ -113,7 +113,7 @@ async def send_email(to: str, subject: str, html: str, cc: list[str] = []) -> bo
 
 def build_email_html(schedules: list[dict], days: int) -> str:
     """이메일 HTML 생성 — Apple 스타일"""
-    FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Pretendard', 'Apple SD Gothic Neo', sans-serif"
+    FONT = "Verdana, Geneva, 'Apple SD Gothic Neo', sans-serif"
     if days == 0:
         urgency_color = "#ef4444"
         urgency_text  = "D-Day"
