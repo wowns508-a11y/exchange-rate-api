@@ -1315,6 +1315,8 @@ class ScheduleItem(BaseModel):
     target_entity: str = "본사"
     is_important: bool = False
     is_done: bool = False # ✅ 완료 상태 추가
+    description: str = None    # ← 이미 있나요?
+    created_by: str = None     # ← 이거 추가
 
 @app.get("/schedules")
 async def get_schedules():
