@@ -14,7 +14,7 @@ router = APIRouter()
 
 # ── 환경변수 (Railway Variables에 등록) ─────────────────────────────────────
 SUPABASE_URL    = os.getenv("SUPABASE_URL", "https://aaexsceexmzdufwyxjvu.supabase.co")
-SUPABASE_KEY    = os.getenv("SUPABASE_SERVICE_KEY", "")   # service_role key
+SUPABASE_KEY    = os.getenv("SUPABASE_KEY", "")   # service_role key
 RESEND_API_KEY  = os.getenv("RESEND_API_KEY", "")         # Resend API key
 FROM_EMAIL      = os.getenv("FROM_EMAIL", "재경팀 <noreply@yourdomain.com>")
 CRON_SECRET     = os.getenv("CRON_SECRET", "")            # 무단 호출 방지용 시크릿
