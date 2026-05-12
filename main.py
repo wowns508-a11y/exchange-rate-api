@@ -1382,3 +1382,28 @@ def get_all_users():
         return {"success": True, "data": result.data}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@app.get("/rates/monthly")
+def get_monthly_rates(currency: str = "USD"):
+    """최근 30일 환율 데이터"""
+    try:
+        end_date = datetime.today()
+        start_date = end_date - timedelta(days=40)  # 주말/공휴일 감안해서 넉넉하게
+        
+        result = []
+        current = end_date
+        
+        while current >= start_date and len(result) < 30:
+            date_str = current.strftime("%Y%m%d")
+            # 기존에 쓰던 환율 fetch 함수 호출 (weekly랑 동일한 방식)
+            rate = fetch_rate_for_date(currency, date_str)
+            if rate is not None:
+                result.append({
+                    "date": current.strftime("%m/%d"),
+                    "value": rate
+                })
+            current -= timedelta(days=1)
+        
+        return {"success": True, "data": result}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
