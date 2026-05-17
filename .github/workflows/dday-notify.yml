@@ -11,4 +11,6 @@ jobs:
     steps:
       - name: 마감 일정 알림 발송
         run: |
-          curl -X POST "https://exchange-rate-api-production-6e2f.up.railway.app/notify/dday?secret=hgf2026cron"
+          curl -X POST "https://exchange-rate-api-production-6e2f.up.railway.app/notify/dday?secret=${{ secrets.CRON_SECRET }}" \
+               -H "Content-Type: application/json" \
+               -d '{"secret": "${{ secrets.CRON_SECRET }}"}'
