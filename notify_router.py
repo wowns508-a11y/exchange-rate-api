@@ -75,12 +75,13 @@ async def send_teams_notification(employee_id: str, message_text: str) -> bool:
         logging.warning("[Teams] TEAMS_WEBHOOK_URL이 설정되지 않아 발송을 스킵합니다.")
         return False
         
-    # 선임님과 기를 쓰며 맞췄던 완벽한 수식의 근본 약속 포맷
+    # 🌟 선임님이 수동 테스트로 100% 뚫어내셨던 바로 그 마법의 'text' 주머니 규격!
     payload = {
-    "plainTextContent": f"{employee_id}$$$🚨 D-day 알림 🚨\n{message_text}"
+        "text": f"{employee_id}$$$🚨 D-day 알림 🚨<br>{message_text}"
     }
     
-    async with httpx.AsyncClient() as client:
+    # SSL 인증서 검증 건너뛰기(verify=False)까지 완벽하게 이식
+    async with httpx.AsyncClient(verify=False) as client:
         try:
             r = await client.post(TEAMS_WEBHOOK_URL, json=payload, timeout=10)
             logging.warning(f"[Teams] status={r.status_code} body={r.text} payload={payload}")
