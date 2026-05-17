@@ -78,7 +78,7 @@ async def send_teams_notification(employee_id: str, message_text: str) -> bool:
     # 선임님과 기를 쓰며 맞췄던 완벽한 수식의 근본 약속 포맷
     payload = {
     "plainTextContent": f"{employee_id}$$$🚨 D-day 알림 🚨\n{message_text}"
-}
+    }
     
     async with httpx.AsyncClient() as client:
         try:
